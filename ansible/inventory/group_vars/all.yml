@@ -1,0 +1,7 @@
+---
+ansible_user: azureuser
+ansible_ssh_private_key_file: "{{ lookup('env','HOME') }}/.ssh/gaire-platform-ansible"
+ansible_python_interpreter: /usr/bin/python3
+
+# Master's PRIVATE IP — your declared addressing, stable across rebuilds
+k3s_server_private_ip: "10.10.2.10"

@@ -1,0 +1,8 @@
+---
+# Workers have no public IP — reach them by jumping through the master.
+# Master's address comes from the Terraform-generated inventory, so this
+# survives rebuilds with no edits.
+ansible_ssh_common_args: >-
+  -o ProxyCommand="ssh -i {{ lookup('env','HOME') }}/.ssh/gaire-platform-ansible
+  -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+  -W %h:%p azureuser@{{ hostvars['k3s-master'].ansible_host }}"

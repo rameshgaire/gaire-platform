@@ -1,0 +1,12 @@
+# GENERATED FROM TERRAFORM — do not edit by hand. Regenerate after each apply.
+[master]
+k3s-master ansible_host=${master_public_ip}
+
+[workers]
+%{ for name, ip in worker_private_ips ~}
+${name} ansible_host=${ip}
+%{ endfor ~}
+
+[k3s_cluster:children]
+master
+workers

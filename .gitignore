@@ -1,0 +1,36 @@
+# ===== Terraform =====
+# State files can contain secrets in plaintext — never commit them.
+*.tfstate
+*.tfstate.*
+
+# Saved execution plans can also embed secret values.
+*.tfplan
+
+# Downloaded providers/modules: large, machine-specific, rebuilt by `terraform init`.
+.terraform/
+
+# Variable files often hold secrets (subscription IDs, keys).
+# Defense-in-depth: secrets/ is already ignored below, this catches any stray tfvars.
+*.tfvars
+*.tfvars.json
+
+# NOTE: .terraform.lock.hcl is intentionally NOT ignored — it pins provider
+# versions and SHOULD be committed so rebuilds use the same providers.
+
+# ===== Secrets =====
+# Everything in secrets/ stays local. Keep only a README to document the folder.
+secrets/*
+!secrets/README.md
+
+# ===== Ansible =====
+# Inventory is generated from Terraform outputs — an artifact, not source.
+ansible/inventory/hosts.ini
+
+# Failed-host retry files.
+*.retry
+
+# ===== Editors / OS =====
+.vscode/
+.idea/
+*.swp
+*.log
