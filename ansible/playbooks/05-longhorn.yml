@@ -50,7 +50,9 @@
         k3s kubectl patch storageclass local-path
         -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"false"}}}'
       register: patch_result
-      changed_when: "'patched' in patch_result.stdout"
+      changed_when:
+        - "'patched' in patch_result.stdout"
+        - "'no change' not in patch_result.stdout"
       failed_when:
         - patch_result.rc != 0
         - "'not patched' not in patch_result.stdout"
