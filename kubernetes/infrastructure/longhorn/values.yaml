@@ -1,0 +1,8 @@
+# Longhorn Helm values — gaire-platform
+# 2 storage nodes (worker01 + worker02), so use 2 replicas, not the default 3.
+defaultSettings:
+  defaultReplicaCount: 2
+  defaultDataPath: /var/lib/longhorn
+
+persistence:
+  defaultClassReplicaCount: 2
