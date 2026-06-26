@@ -11,22 +11,24 @@ IP automatically.
 - **Network:** VNET `10.10.0.0/16`
   - public subnet `10.10.1.0/24` (reserved for a future load balancer)
   - private subnet `10.10.2.0/24` (all nodes live here)
-- **Nodes:** 3 × Ubuntu 22.04 LTS (`Standard_B2als_v2`)
+- **Nodes:** 3 × Ubuntu 22.04 LTS (`Standard_B2as_v2`, 2 vCPU / 8 GB)
   - `k3s-master`  — `10.10.2.10`, holds the one public IP, runs the K3s control plane
-  - `k3s-worker01` — `10.10.2.11` (private only)
-  - `k3s-worker02` — `10.10.2.12` (private only)
+  - `k3s-worker01` — `10.10.2.11` (private only, + 50 GB Longhorn data disk)
+  - `k3s-worker02` — `10.10.2.12` (private only, + 50 GB Longhorn data disk)
 - **Access:** SSH and all ingress enter through the master's public IP.
   Workers have no public IP and are reached by jumping through the master.
 - **Cluster:** K3s, with the bundled Traefik and servicelb disabled (installed
   separately later for version control).
+- **Storage:** Longhorn (distributed block storage), 2 replicas, on dedicated
+  50 GB disks mounted at `/var/lib/longhorn` on each worker.
 
 ## Repository layout
 
 ```
 terraform/
-  networking/   RG, VNET, subnets, NSG, public IP   (apply 1st)
-  compute/      NICs + VMs; generates the Ansible inventory   (apply 2nd)
-  storage/      Longhorn data disks                 (not yet written)
+  networking/   RG, VNET, subnets, NSG, public IP            (apply 1st)
+  compute/      NICs + VMs; generates the Ansible inventory  (apply 2nd)
+  storage/      Longhorn data disks attached to workers      (apply 3rd)
 ansible/
   ansible.cfg
   inventory/
@@ -35,88 +37,149 @@ ansible/
   playbooks/
     01-base.yml            OS prep (updates, swap off, kernel/sysctl, open-iscsi)
     02-k3s.yml             K3s server on master, agents joined on workers
+    03-kubeconfig.yml      fetches kubeconfig to the control node
+    04-longhorn-prep.yml   formats + mounts the data disk at /var/lib/longhorn
+  scripts/
+    kube-tunnel.sh         SSH tunnel for local kubectl/helm (run, leave open)
   requirements.yml         Ansible collections
+kubernetes/
+  infrastructure/
+    longhorn/values.yaml   Longhorn Helm values (2 replicas)
 secrets/                   gitignored — see "Secrets" below
 ```
 
-## Prerequisites
+## Prerequisites (one-time per control node)
 
 - Azure CLI, authenticated (`az login`)
 - Terraform >= 1.5
-- Ansible (with collections from `ansible/requirements.yml`)
-- Two SSH keypairs on the control node:
+- Ansible (+ collections: `ansible-galaxy collection install -r ansible/requirements.yml`)
+- kubectl and Helm 3
+- Two SSH keypairs:
   - `~/.ssh/gaire-platform-admin`   — interactive SSH
   - `~/.ssh/gaire-platform-ansible` — Ansible automation
-- `secrets/terraform.tfvars` (not committed) containing:
+- `secrets/terraform.tfvars` (not committed), containing:
 ```hcl
   subscription_id    = "<your-azure-subscription-id>"
   ssh_source_address = "<your-control-node-public-ip>/32"
 ```
 
-## Build (from nothing)
+---
+
+## Build (from nothing) — full sequence
+
+### 1. Infrastructure (Terraform) — forward dependency order
 
 ```bash
-# 1. Networking — RG, VNET, subnets, NSG, public IP
 cd terraform/networking
-terraform init        # only needed on a fresh clone
+terraform init        # fresh clone only
 terraform apply -var-file=../../secrets/terraform.tfvars
 
-# 2. Compute — VMs + NICs; also writes ansible/inventory/hosts.ini with the live IP
 cd ../compute
-terraform init        # only needed on a fresh clone
-terraform apply -var-file=../../secrets/terraform.tfvars
+terraform init        # fresh clone only
+terraform apply -var-file=../../secrets/terraform.tfvars   # also writes ansible/inventory/hosts.ini
 
-# 3. Configure the nodes and build the cluster
+cd ../storage
+terraform init        # fresh clone only
+terraform apply -var-file=../../secrets/terraform.tfvars   # 50 GB data disk per worker
+```
+
+### 2. Cluster + node prep (Ansible)
+
+```bash
 cd ../../ansible
 ansible-galaxy collection install -r requirements.yml   # fresh clone only
 ansible all -m ping                                     # verify reachability
-ansible-playbook playbooks/01-base.yml
-ansible-playbook playbooks/02-k3s.yml
-ansible-playbook playbooks/03-kubeconfig.yml      # NEW: writes ~/.kube/config
 
-# 4. Verify the cluster (IP is in terraform output `master_public_ip`)
-ssh -i ~/.ssh/gaire-platform-admin azureuser@<master-public-ip> \
-  "sudo k3s kubectl get nodes -o wide"
-# expect: 3 nodes, all Ready, on their 10.10.2.x internal IPs
+ansible-playbook playbooks/01-base.yml          # OS prep
+ansible-playbook playbooks/02-k3s.yml           # build the cluster
+ansible-playbook playbooks/03-kubeconfig.yml    # ~/.kube/config on control node
+ansible-playbook playbooks/04-longhorn-prep.yml # format + mount worker data disks
 ```
 
-## Teardown
+### 3. Open the kubectl tunnel (per work session)
 
-Destroy in reverse dependency order — compute reads networking's state, so
-networking must outlive it:
+Run in a dedicated terminal and **leave it open**; use kubectl/helm in another:
 
 ```bash
-# TEARDOWN — reverse dependency order (storage now leads):
+./scripts/kube-tunnel.sh
+```
+
+### 4. Longhorn (Helm) — MANUAL, not yet automated
+
+In the second terminal (tunnel open):
+
+```bash
+helm repo add longhorn https://charts.longhorn.io
+helm repo update
+
+helm install longhorn longhorn/longhorn \
+  --namespace longhorn-system \
+  --create-namespace \
+  --version 1.12.0 \
+  --values ../kubernetes/infrastructure/longhorn/values.yaml
+
+# K3s ships local-path as a default StorageClass too — demote it so Longhorn
+# is the SOLE default (this must be re-run every rebuild):
+kubectl patch storageclass local-path \
+  -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"false"}}}'
+```
+
+### 5. Verify
+
+```bash
+ssh -i ~/.ssh/gaire-platform-admin azureuser@<master-public-ip> \
+  "sudo k3s kubectl get nodes -o wide"            # 3 nodes Ready, 10.10.2.x internal IPs
+
+kubectl get storageclass                          # only "longhorn (default)"
+kubectl -n longhorn-system get nodes.longhorn.io  # worker01/02 SCHEDULABLE=True
+```
+
+> **Automation status:** Terraform (steps 1) and Ansible (step 2) are fully
+> automated. Longhorn + the local-path patch (step 4) are still **manual** —
+> a future `05-longhorn.yml` playbook will fold these in.
+
+---
+
+## Teardown — reverse dependency order
+
+Storage references the VMs, and compute reads networking's state, so destroy
+storage → compute → networking:
+
+```bash
 cd terraform/storage    && terraform destroy -var-file=../../secrets/terraform.tfvars
 cd ../compute           && terraform destroy -var-file=../../secrets/terraform.tfvars
 cd ../networking        && terraform destroy -var-file=../../secrets/terraform.tfvars
 ```
 
 The public IP is released on teardown; the next build draws a new one and the
-inventory regenerates around it.
+inventory regenerates around it. (Storage is **disposable** — Longhorn data on
+the worker disks is destroyed too.)
 
 ## How rebuild-safety works
 
 - The Ansible inventory (`hosts.ini`) is **generated** by Terraform's `compute`
-  module from its outputs — it is gitignored, never hand-edited. On every
-  `apply` it is rewritten with the current public IP, so a new IP after a
-  rebuild needs zero manual edits.
+  module from its outputs — gitignored, never hand-edited. Each `apply` rewrites
+  it with the current public IP, so a new IP after rebuild needs zero edits.
 - `group_vars/all.yml` and `workers.yml` use `lookup('env','HOME')` and read the
-  master's address from the generated inventory, so they contain no hardcoded
-  paths or IPs.
+  master's address from the generated inventory — no hardcoded paths or IPs.
 - Private IPs (`10.10.2.10/.11/.12`) are declared inputs in
-  `terraform/compute/variables.tf`, so they are stable across rebuilds by design.
-  
-```bash
-  # BUILD — forward order (storage now trails compute):
-cd terraform/networking && terraform apply -var-file=../../secrets/terraform.tfvars
-cd ../compute           && terraform apply -var-file=../../secrets/terraform.tfvars
-cd ../storage           && terraform apply -var-file=../../secrets/terraform.tfvars
-```
+  `terraform/compute/variables.tf`, so they're stable across rebuilds by design.
+- The Longhorn data disk is mounted by **UUID** (read at runtime), and the
+  format step is guarded — re-running `04-longhorn-prep.yml` never reformats an
+  existing disk.
+
+## Local kubectl access
+
+`kubectl`/`helm` run from the control node and reach the cluster through an SSH
+tunnel (API port 6443 is deliberately not exposed in the NSG).
+
+- **Each rebuild:** `ansible-playbook playbooks/03-kubeconfig.yml` regenerates `~/.kube/config`.
+- **Each work session:** run `./ansible/scripts/kube-tunnel.sh` in a terminal and leave it open; use kubectl in another. The script auto-exits if the connection drops.
+- **Quick check:** `kubeup` alias — tells you if the tunnel is up. If kubectl says "connection refused", the tunnel isn't running.
 
 ## Secrets
 
-`secrets/` is gitignored except this note. It holds:
+`secrets/` is gitignored except `README.md`. It holds:
 - `terraform.tfvars` — subscription ID and SSH source IP
 - `ansible-secrets.yml` — reserved for Ansible Vault–encrypted values (later)
 
@@ -127,35 +190,22 @@ cd ../storage           && terraform apply -var-file=../../secrets/terraform.tfv
 
 - **VM size:** `Standard_B2s` hit capacity limits and the Basv2 family started
   at a **0-core quota** in `australiaeast` — raised via `az quota create` after
-  registering the `Microsoft.Quota` provider. Current nodes are 4 GB
-  (`B2als_v2`); plan to bump workers to `B2as_v2` (8 GB) before installing
-  Longhorn + monitoring.
+  registering the `Microsoft.Quota` provider. Nodes are now `B2as_v2` (8 GB).
 - **Ubuntu image (Gen2):** publisher `Canonical`, offer
-  `0001-com-ubuntu-server-jammy`, sku `22_04-lts-gen2` — the v2 VM series is
-  Gen2-only.
+  `0001-com-ubuntu-server-jammy`, sku `22_04-lts-gen2` — the v2 VM series is Gen2-only.
 - **Outbound:** workers reach the internet via Azure default outbound access
   (no NAT gateway, to keep costs down).
+- **Disk device naming:** the data disk is `/dev/sdb` today but that's not
+  stable — the playbook uses `/dev/disk/azure/scsi1/lun0` (stable LUN path) and
+  mounts by filesystem UUID.
 
 ## Roadmap
 
 - [x] Networking (Terraform)
 - [x] Compute (Terraform) + generated inventory
 - [x] Base OS prep + K3s cluster (Ansible)
-- [ ] kubeconfig to control node (`kubectl` locally)
-- [ ] Storage module + Longhorn (resize workers to 8 GB)
+- [x] kubeconfig to control node (`kubectl` locally)
+- [x] Storage module + Longhorn (8 GB workers, 2 replicas)
 - [ ] Ingress (Traefik) + cert-manager + real domain
 - [ ] Monitoring (Prometheus / Grafana / Loki)
 - [ ] GitOps (ArgoCD) + applications
-
-## Local kubectl access
-
-`kubectl`/`helm` run from the control node and reach the cluster through an
-SSH tunnel (the API port 6443 is deliberately not exposed in the NSG).
-
-One-time per control node: install kubectl (see Prerequisites).
-Each rebuild: `ansible-playbook playbooks/03-kubeconfig.yml` regenerates ~/.kube/config.
-
-Each work session:
-    ./ansible/scripts/kube-tunnel.sh   # run in a terminal, leave open
-    kubectl get nodes                   # use in another terminal
-Ctrl-C the tunnel when done. If kubectl says "connection refused", the tunnel isn't running.
