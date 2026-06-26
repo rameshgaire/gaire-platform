@@ -100,3 +100,14 @@ variable "tags" {
     managed_by = "terraform"
   }
 }
+
+variable "cloudflare_api_token" {
+  description = "Cloudflare API token (Zone:DNS:Edit + Zone:Read) for managing gairelab.uk DNS."
+  type        = string
+  sensitive   = true
+}
+
+variable "cloudflare_zone_id" {
+  description = "Cloudflare Zone ID for gairelab.uk."
+  type        = string
+}
