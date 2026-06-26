@@ -1,0 +1,67 @@
+---
+# Ingress layer: Traefik (play 1) + cert-manager (play 2).
+# Both run ON the master (K3s kubeconfig + local API) — no SSH tunnel needed.
+
+- name: Install Traefik ingress controller
+  hosts: master
+  become: true
+  gather_facts: false
+
+  vars:
+    traefik_version: "40.2.0"
+    traefik_namespace: traefik
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    values_remote_path: /tmp/traefik-values.yaml
+
+  tasks:
+    - name: Add the Traefik Helm repo
+      kubernetes.core.helm_repository:
+        name: traefik
+        repo_url: https://traefik.github.io/charts
+
+    - name: Copy Traefik values to the master
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../kubernetes/infrastructure/traefik/values.yaml"
+        dest: "{{ values_remote_path }}"
+        mode: "0644"
+
+    - name: Install/upgrade Traefik
+      kubernetes.core.helm:
+        name: traefik
+        chart_ref: traefik/traefik
+        chart_version: "{{ traefik_version }}"
+        release_namespace: "{{ traefik_namespace }}"
+        create_namespace: true
+        values_files:
+          - "{{ values_remote_path }}"
+        wait: true
+        wait_timeout: 10m
+        kubeconfig: "{{ kubeconfig }}"
+
+- name: Install cert-manager
+  hosts: master
+  become: true
+  gather_facts: false
+
+  vars:
+    certmanager_version: "v1.18.2"
+    certmanager_namespace: cert-manager
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+
+  tasks:
+    - name: Add the Jetstack (cert-manager) Helm repo
+      kubernetes.core.helm_repository:
+        name: jetstack
+        repo_url: https://charts.jetstack.io
+
+    - name: Install/upgrade cert-manager (with CRDs)
+      kubernetes.core.helm:
+        name: cert-manager
+        chart_ref: jetstack/cert-manager
+        chart_version: "{{ certmanager_version }}"
+        release_namespace: "{{ certmanager_namespace }}"
+        create_namespace: true
+        kubeconfig: "{{ kubeconfig }}"
+        values:
+          crds:
+            enabled: true

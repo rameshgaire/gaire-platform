@@ -1,0 +1,39 @@
+# Traefik Helm values — gaire-platform
+# Single-entry-point design: Traefik binds directly to the master's host
+# ports 80/443 (hostPort), because servicelb is disabled and only the master
+# has the public IP. No LoadBalancer Service, no MetalLB.
+
+# Pin Traefik to the master — the only node with the public IP.
+nodeSelector:
+  kubernetes.io/hostname: k3s-master
+
+# Run exactly one replica (hostPort means one pod owns the node's 80/443).
+deployment:
+  replicas: 1
+
+# Service is ClusterIP, NOT LoadBalancer — we reach Traefik via hostPort,
+# so it must not request an external IP it can never get.
+service:
+  type: ClusterIP
+
+ports:
+  web:
+    port: 8000
+    exposedPort: 80
+    hostPort: 80
+  websecure:
+    port: 8443
+    exposedPort: 443
+    hostPort: 443
+# Expose the Traefik dashboard internally only (reach via port-forward).
+# Not published to the internet.
+ingressRoute:
+  dashboard:
+    enabled: true
+
+# Sensible logging for a lab
+logs:
+  general:
+    level: INFO
+  access:
+    enabled: true
