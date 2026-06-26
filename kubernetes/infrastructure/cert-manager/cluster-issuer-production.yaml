@@ -1,0 +1,17 @@
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-production
+spec:
+  acme:
+    # Let's Encrypt PRODUCTION — trusted certs, but rate-limited (50/week per domain).
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: rameshgaire7@gaire.com
+    privateKeySecretRef:
+      name: letsencrypt-production-account-key
+    solvers:
+      - dns01:
+          cloudflare:
+            apiTokenSecretRef:
+              name: cloudflare-api-token
+              key: api-token
