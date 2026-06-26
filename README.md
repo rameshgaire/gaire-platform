@@ -39,6 +39,7 @@ ansible/
     02-k3s.yml             K3s server on master, agents joined on workers
     03-kubeconfig.yml      fetches kubeconfig to the control node
     04-longhorn-prep.yml   formats + mounts the data disk at /var/lib/longhorn
+    05-longhorn.yml        installs Longhorn (Helm) + sets default StorageClass
   scripts/
     kube-tunnel.sh         SSH tunnel for local kubectl/helm (run, leave open)
   requirements.yml         Ansible collections
@@ -94,6 +95,7 @@ ansible-playbook playbooks/01-base.yml          # OS prep
 ansible-playbook playbooks/02-k3s.yml           # build the cluster
 ansible-playbook playbooks/03-kubeconfig.yml    # ~/.kube/config on control node
 ansible-playbook playbooks/04-longhorn-prep.yml # format + mount worker data disks
+ansible-playbook playbooks/05-longhorn.yml      # install Longhorn + set default StorageClass
 ```
 
 ### 3. Open the kubectl tunnel (per work session)
@@ -104,27 +106,7 @@ Run in a dedicated terminal and **leave it open**; use kubectl/helm in another:
 ./scripts/kube-tunnel.sh
 ```
 
-### 4. Longhorn (Helm) — MANUAL, not yet automated
-
-In the second terminal (tunnel open):
-
-```bash
-helm repo add longhorn https://charts.longhorn.io
-helm repo update
-
-helm install longhorn longhorn/longhorn \
-  --namespace longhorn-system \
-  --create-namespace \
-  --version 1.12.0 \
-  --values ../kubernetes/infrastructure/longhorn/values.yaml
-
-# K3s ships local-path as a default StorageClass too — demote it so Longhorn
-# is the SOLE default (this must be re-run every rebuild):
-kubectl patch storageclass local-path \
-  -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"false"}}}'
-```
-
-### 5. Verify
+### 4. Verify
 
 ```bash
 ssh -i ~/.ssh/gaire-platform-admin azureuser@<master-public-ip> \
