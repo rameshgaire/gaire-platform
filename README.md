@@ -86,7 +86,9 @@ Destroy in reverse dependency order — compute reads networking's state, so
 networking must outlive it:
 
 ```bash
-cd terraform/compute    && terraform destroy -var-file=../../secrets/terraform.tfvars
+# TEARDOWN — reverse dependency order (storage now leads):
+cd terraform/storage    && terraform destroy -var-file=../../secrets/terraform.tfvars
+cd ../compute           && terraform destroy -var-file=../../secrets/terraform.tfvars
 cd ../networking        && terraform destroy -var-file=../../secrets/terraform.tfvars
 ```
 
@@ -104,6 +106,13 @@ inventory regenerates around it.
   paths or IPs.
 - Private IPs (`10.10.2.10/.11/.12`) are declared inputs in
   `terraform/compute/variables.tf`, so they are stable across rebuilds by design.
+  
+```bash
+  # BUILD — forward order (storage now trails compute):
+cd terraform/networking && terraform apply -var-file=../../secrets/terraform.tfvars
+cd ../compute           && terraform apply -var-file=../../secrets/terraform.tfvars
+cd ../storage           && terraform apply -var-file=../../secrets/terraform.tfvars
+```
 
 ## Secrets
 
