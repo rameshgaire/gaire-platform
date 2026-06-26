@@ -172,6 +172,30 @@ kubectl get clusterissuer                         # staging + production both RE
 kubectl -n traefik get certificate                # wildcard cert(s) READY=True
 curl -ik https://<master-public-ip>               # Traefik 404 over TLS
 ```
+## Deploying apps
+
+Apps live in `kubernetes/apps/` and are applied with `kubectl` (until GitOps/ArgoCD
+is set up, which will auto-apply this directory). Each app gets its own namespace
+and its own TLS cert, issued from the cluster-scoped `letsencrypt-production` issuer.
+
+The pattern (see `kubernetes/apps/whoami.yaml` as the worked example):
+1. A `Namespace`.
+2. A `Certificate` requesting `*.gairelab.uk` from `letsencrypt-production` —
+   cert-manager issues a TLS secret into that namespace.
+3. The app `Deployment` + `Service`.
+4. An `Ingress` (host `<app>.gairelab.uk`, `entrypoints: websecure`) referencing
+   the namespace-local TLS secret.
+
+Deploy and verify:
+```bash
+kubectl apply -f kubernetes/apps/whoami.yaml
+kubectl -n demo get certificate -w        # wait READY=True (DNS-01, 1-5 min)
+curl -i https://hello.gairelab.uk         # HTTP/2 200, no -k = trusted cert
+```
+
+DNS needs no per-app change — the wildcard `*.gairelab.uk` (set by Terraform)
+already resolves every subdomain to the master.
+
 
 > **Automation status:** Terraform (x3) and Ansible (x6) are automated, including
 > the Cloudflare secret and BOTH (staging + production) issuers. The wildcard
