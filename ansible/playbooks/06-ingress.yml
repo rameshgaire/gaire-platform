@@ -115,3 +115,15 @@
         cmd: k3s kubectl apply -f /tmp/cluster-issuer-staging.yaml
       register: issuer
       changed_when: "'created' in issuer.stdout or 'configured' in issuer.stdout"
+
+    -  name: Copy the production ClusterIssuer to the master
+       ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../kubernetes/infrastructure/cert-manager/cluster-issuer-production.yaml"
+        dest: /tmp/cluster-issuer-production.yaml
+        mode: "0644"
+
+    - name: Apply the production ClusterIssuer
+      ansible.builtin.command:
+        cmd: k3s kubectl apply -f /tmp/cluster-issuer-production.yaml
+      register: prod_issuer
+      changed_when: "'created' in prod_issuer.stdout or 'configured' in prod_issuer.stdout"
