@@ -1,0 +1,13 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: wildcard-gairelab-uk-staging
+  namespace: traefik
+spec:
+  secretName: wildcard-gairelab-uk-staging-tls
+  issuerRef:
+    name: letsencrypt-staging
+    kind: ClusterIssuer
+  dnsNames:
+    - "gairelab.uk"
+    - "*.gairelab.uk"

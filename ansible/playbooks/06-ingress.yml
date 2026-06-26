@@ -1,6 +1,6 @@
 ---
-# Ingress layer: Traefik (play 1) + cert-manager (play 2).
-# Both run ON the master (K3s kubeconfig + local API) — no SSH tunnel needed.
+# Ingress layer: Traefik (play 1), cert-manager (play 2), cert-manager config (play 3).
+# All run ON the master (K3s kubeconfig + local API) — no SSH tunnel needed.
 
 - name: Install Traefik ingress controller
   hosts: master
@@ -34,8 +34,6 @@
         create_namespace: true
         values_files:
           - "{{ values_remote_path }}"
-        wait: true
-        wait_timeout: 10m
         kubeconfig: "{{ kubeconfig }}"
 
 - name: Install cert-manager
@@ -61,7 +59,59 @@
         chart_version: "{{ certmanager_version }}"
         release_namespace: "{{ certmanager_namespace }}"
         create_namespace: true
+        wait: true
+        wait_timeout: 10m
         kubeconfig: "{{ kubeconfig }}"
         values:
           crds:
             enabled: true
+
+- name: Configure cert-manager (Cloudflare secret + Let's Encrypt staging issuer)
+  hosts: master
+  become: true
+  gather_facts: false
+
+  vars_files:
+    - ../../secrets/ansible-secrets.yml
+
+  vars:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+
+  tasks:
+    - name: Render the Cloudflare API token Secret on the master
+      ansible.builtin.copy:
+        dest: /tmp/cloudflare-secret.yaml
+        mode: "0600"
+        content: |
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: cloudflare-api-token
+            namespace: cert-manager
+          type: Opaque
+          stringData:
+            api-token: "{{ cloudflare_api_token }}"
+      no_log: true
+
+    - name: Apply the Cloudflare API token Secret
+      ansible.builtin.command:
+        cmd: k3s kubectl apply -f /tmp/cloudflare-secret.yaml
+      register: cf_secret
+      changed_when: "'created' in cf_secret.stdout or 'configured' in cf_secret.stdout"
+
+    - name: Remove the rendered Secret file from the master
+      ansible.builtin.file:
+        path: /tmp/cloudflare-secret.yaml
+        state: absent
+
+    - name: Copy the staging ClusterIssuer to the master
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../kubernetes/infrastructure/cert-manager/cluster-issuer-staging.yaml"
+        dest: /tmp/cluster-issuer-staging.yaml
+        mode: "0644"
+
+    - name: Apply the staging ClusterIssuer
+      ansible.builtin.command:
+        cmd: k3s kubectl apply -f /tmp/cluster-issuer-staging.yaml
+      register: issuer
+      changed_when: "'created' in issuer.stdout or 'configured' in issuer.stdout"
