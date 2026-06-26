@@ -72,6 +72,7 @@ ansible-galaxy collection install -r requirements.yml   # fresh clone only
 ansible all -m ping                                     # verify reachability
 ansible-playbook playbooks/01-base.yml
 ansible-playbook playbooks/02-k3s.yml
+ansible-playbook playbooks/03-kubeconfig.yml      # NEW: writes ~/.kube/config
 
 # 4. Verify the cluster (IP is in terraform output `master_public_ip`)
 ssh -i ~/.ssh/gaire-platform-admin azureuser@<master-public-ip> \
@@ -136,3 +137,16 @@ inventory regenerates around it.
 - [ ] Ingress (Traefik) + cert-manager + real domain
 - [ ] Monitoring (Prometheus / Grafana / Loki)
 - [ ] GitOps (ArgoCD) + applications
+
+## Local kubectl access
+
+`kubectl`/`helm` run from the control node and reach the cluster through an
+SSH tunnel (the API port 6443 is deliberately not exposed in the NSG).
+
+One-time per control node: install kubectl (see Prerequisites).
+Each rebuild: `ansible-playbook playbooks/03-kubeconfig.yml` regenerates ~/.kube/config.
+
+Each work session:
+    ./ansible/scripts/kube-tunnel.sh   # run in a terminal, leave open
+    kubectl get nodes                   # use in another terminal
+Ctrl-C the tunnel when done. If kubectl says "connection refused", the tunnel isn't running.
