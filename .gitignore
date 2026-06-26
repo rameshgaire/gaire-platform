@@ -21,6 +21,7 @@
 # Everything in secrets/ stays local. Keep only a README to document the folder.
 secrets/*
 !secrets/README.md
+!secrets/ansible-secrets.yml
 
 # ===== Ansible =====
 # Inventory is generated from Terraform outputs — an artifact, not source.
