@@ -232,6 +232,28 @@ worker disks is destroyed too.
 - TLS certs use DNS-01, which proves domain ownership via a Cloudflare TXT record —
   independent of the public IP — so certs re-issue on every rebuild with no manual steps.
 
+# 1. Infra (forward order)
+cd ~/gaire-platform/terraform/networking && terraform apply -var-file=../../secrets/terraform.tfvars
+cd ../compute                            && terraform apply -var-file=../../secrets/terraform.tfvars
+cd ../storage                            && terraform apply -var-file=../../secrets/terraform.tfvars
+
+# 2. Cluster, storage, ingress (Ansible)
+cd ~/gaire-platform/ansible
+ansible-playbook playbooks/01-base.yml
+ansible-playbook playbooks/02-k3s.yml
+ansible-playbook playbooks/03-kubeconfig.yml
+ansible-playbook playbooks/04-longhorn-prep.yml
+ansible-playbook playbooks/05-longhorn.yml
+ansible-playbook playbooks/06-ingress.yml
+
+# 3. MANUAL: tunnel (separate terminal, leave open)
+./scripts/kube-tunnel.sh
+
+# 4. MANUAL: issue the cert
+kubectl apply -f ../kubernetes/infrastructure/cert-manager/wildcard-certificate-staging.yaml
+kubectl -n traefik get certificate -w     # wait for READY=True
+
+
 ## Secrets
 
 `secrets/` is gitignored except `README.md` and the encrypted vault. It holds:
