@@ -61,7 +61,7 @@ playbooks/
 
 05-longhorn.yml        installs Longhorn (Helm) + sets default StorageClass
 
-06-ingress.yml         Traefik + cert-manager + Cloudflare DNS-01 issuer
+06-ingress.yml         Traefik + cert-manager + Cloudflare DNS-01 issuers (staging + production)
 
 scripts/
 
@@ -77,9 +77,13 @@ traefik/values.yaml           Traefik Helm values (hostPort on master)
 
 cert-manager/
 
-cluster-issuer-staging.yaml        Let's Encrypt staging (DNS-01 via Cloudflare)
+cluster-issuer-staging.yaml           Let's Encrypt staging (DNS-01 via Cloudflare)
 
-wildcard-certificate-staging.yaml  *.gairelab.uk staging cert
+cluster-issuer-production.yaml         Let's Encrypt production (DNS-01 via Cloudflare)
+
+wildcard-certificate-staging.yaml      *.gairelab.uk staging cert
+
+wildcard-certificate-production.yaml   *.gairelab.uk production (trusted) cert
 
 secrets/                   gitignored except README.md and the encrypted vault
 
@@ -137,7 +141,7 @@ ansible-playbook playbooks/02-k3s.yml           # build the cluster
 ansible-playbook playbooks/03-kubeconfig.yml    # ~/.kube/config on control node
 ansible-playbook playbooks/04-longhorn-prep.yml # format + mount worker data disks
 ansible-playbook playbooks/05-longhorn.yml      # Longhorn + default StorageClass
-ansible-playbook playbooks/06-ingress.yml       # Traefik + cert-manager + Cloudflare issuer
+ansible-playbook playbooks/06-ingress.yml       # Traefik + cert-manager + both issuers
 ```
 
 ### 3. Open the kubectl tunnel (per work session)
@@ -150,8 +154,11 @@ Run in a dedicated terminal and leave it open; use kubectl/helm in another:
 
 ### 4. Issue the wildcard certificate (manual — once per cluster)
 
+Production (trusted) cert. Staging cert is also available for testing changes
+without burning production rate limits.
+
 ```bash
-kubectl apply -f ../kubernetes/infrastructure/cert-manager/wildcard-certificate-staging.yaml
+kubectl apply -f ../kubernetes/infrastructure/cert-manager/wildcard-certificate-production.yaml
 kubectl -n traefik get certificate -w    # wait for READY=True (1-5 min)
 ```
 
@@ -161,16 +168,16 @@ kubectl -n traefik get certificate -w    # wait for READY=True (1-5 min)
 kubectl get nodes -o wide                         # 3 nodes Ready, 10.10.2.x internal IPs
 kubectl get storageclass                          # only "longhorn (default)"
 kubectl -n longhorn-system get nodes.longhorn.io  # worker01/02 SCHEDULABLE=True
-kubectl get clusterissuer letsencrypt-staging     # READY=True
-kubectl -n traefik get certificate                # wildcard cert READY=True
+kubectl get clusterissuer                         # staging + production both READY=True
+kubectl -n traefik get certificate                # wildcard cert(s) READY=True
 curl -ik https://<master-public-ip>               # Traefik 404 over TLS
 ```
 
 > **Automation status:** Terraform (x3) and Ansible (x6) are automated, including
-> the Cloudflare secret and the staging issuer. The wildcard Certificate is applied
-> manually (one `kubectl apply` per cluster). A **production** (trusted) issuer and
-> automated DNS A-records are not yet wired — see Roadmap. The kubectl tunnel is a
-> convenience for local access, not required for the build itself.
+> the Cloudflare secret and BOTH (staging + production) issuers. The wildcard
+> Certificate is applied manually (one `kubectl apply` per cluster). Automated DNS
+> A-records are not yet wired — see Roadmap. The kubectl tunnel is a convenience
+> for local access, not required for the build itself.
 
 ---
 
@@ -195,11 +202,12 @@ tunnel (API port 6443 is deliberately not exposed in the NSG).
 - **cert-manager** (v1.18.2) issues TLS certs via **Let's Encrypt DNS-01** using the
   Cloudflare API. DNS-01 (not HTTP-01) so we can issue **wildcard** certs
   (`*.gairelab.uk`) and don't depend on inbound reachability for issuance.
+- **Two ClusterIssuers**, both created by `06-ingress.yml`:
+  - `letsencrypt-staging` — untrusted certs, no rate limits; for testing changes.
+  - `letsencrypt-production` — browser-trusted certs; rate-limited (50/week per domain).
 - **Cloudflare API token** lives in `secrets/ansible-secrets.yml` (Ansible Vault).
   `06-ingress.yml` reads it from the vault and creates the `cloudflare-api-token`
   Kubernetes Secret — the token never touches git or the shell.
-- Currently on the **Let's Encrypt staging** issuer (untrusted certs, no rate limits)
-  to prove the flow. Production issuer is the next step.
 
 ---
 
@@ -231,28 +239,6 @@ worker disks is destroyed too.
   step is guarded — re-running `04-longhorn-prep.yml` never reformats an existing disk.
 - TLS certs use DNS-01, which proves domain ownership via a Cloudflare TXT record —
   independent of the public IP — so certs re-issue on every rebuild with no manual steps.
-
-# 1. Infra (forward order)
-cd ~/gaire-platform/terraform/networking && terraform apply -var-file=../../secrets/terraform.tfvars
-cd ../compute                            && terraform apply -var-file=../../secrets/terraform.tfvars
-cd ../storage                            && terraform apply -var-file=../../secrets/terraform.tfvars
-
-# 2. Cluster, storage, ingress (Ansible)
-cd ~/gaire-platform/ansible
-ansible-playbook playbooks/01-base.yml
-ansible-playbook playbooks/02-k3s.yml
-ansible-playbook playbooks/03-kubeconfig.yml
-ansible-playbook playbooks/04-longhorn-prep.yml
-ansible-playbook playbooks/05-longhorn.yml
-ansible-playbook playbooks/06-ingress.yml
-
-# 3. MANUAL: tunnel (separate terminal, leave open)
-./scripts/kube-tunnel.sh
-
-# 4. MANUAL: issue the cert
-kubectl apply -f ../kubernetes/infrastructure/cert-manager/wildcard-certificate-staging.yaml
-kubectl -n traefik get certificate -w     # wait for READY=True
-
 
 ## Secrets
 
@@ -298,8 +284,7 @@ Control-node-local items to recreate on a fresh control node (not in git):
 - [x] Base OS prep + K3s cluster (Ansible)
 - [x] kubeconfig to control node (kubectl locally)
 - [x] Storage module + Longhorn (8 GB workers, 2 replicas)
-- [x] Ingress (Traefik) + cert-manager + wildcard cert (staging, working)
-- [ ] Production Let's Encrypt issuer (trusted certs)
+- [x] Ingress (Traefik) + cert-manager + wildcard cert (staging + production, trusted)
 - [ ] Cloudflare A-record automation in Terraform (DNS follows public IP)
 - [ ] Test app served over HTTPS
 - [ ] Monitoring (Prometheus / Grafana / Loki)
