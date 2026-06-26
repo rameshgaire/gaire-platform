@@ -30,13 +30,13 @@ variable "ssh_public_key_paths" {
 variable "master_vm_size" {
   description = "VM size for the K3s master."
   type        = string
-  default     = "Standard_B2als_v2" # 2 vCPU / 4 GB
+  default     = "Standard_B2as_v2" # 2 vCPU / 8 GB
 }
 
 variable "worker_vm_size" {
   description = "VM size for each K3s worker."
   type        = string
-  default     = "Standard_B2als_v2" # 2 vCPU / 4 GB
+  default     = "Standard_B2as_v2" # 2 vCPU / 8 GB
 }
 
 variable "master_private_ip" {

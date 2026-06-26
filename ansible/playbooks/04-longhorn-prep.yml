@@ -1,0 +1,65 @@
+---
+# Prepare workers for Longhorn: format + mount the data disk at the default
+# Longhorn data dir, and ensure runtime prerequisites are present.
+# Idempotent — safe to re-run; will not reformat a disk that already has ext4.
+- name: Prepare worker nodes for Longhorn
+  hosts: workers
+  become: true
+  gather_facts: true
+
+  vars:
+    longhorn_disk_device: /dev/disk/azure/scsi1/lun0   # stable LUN path, NOT /dev/sdb
+    longhorn_data_dir: /var/lib/longhorn
+
+  tasks:
+    - name: Ensure Longhorn runtime prerequisites are installed
+      ansible.builtin.apt:
+        name:
+          - open-iscsi      # already from 01-base, listed here so this play is self-sufficient
+          - nfs4-acl-tools
+          - cryptsetup
+        state: present
+        update_cache: true
+
+    - name: Ensure iscsid is enabled and running (Longhorn needs it)
+      ansible.builtin.service:
+        name: iscsid
+        state: started
+        enabled: true
+
+    - name: Resolve the real device behind the LUN symlink
+      ansible.builtin.command: readlink -f {{ longhorn_disk_device }}
+      register: longhorn_real_device
+      changed_when: false
+
+    - name: Check whether the data disk already has a filesystem
+      ansible.builtin.command: blkid -o value -s TYPE {{ longhorn_real_device.stdout }}
+      register: longhorn_fstype
+      changed_when: false
+      failed_when: false   # blkid exits non-zero on an unformatted disk — that's expected
+
+    - name: Format the data disk as ext4 (only if it has no filesystem)
+      community.general.filesystem:
+        fstype: ext4
+        dev: "{{ longhorn_real_device.stdout }}"
+      when: longhorn_fstype.stdout == ""
+
+    - name: Create the Longhorn data directory
+      ansible.builtin.file:
+        path: "{{ longhorn_data_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Read the data disk's filesystem UUID directly (facts can lag a fresh format)
+      ansible.builtin.command: blkid -o value -s UUID {{ longhorn_real_device.stdout }}
+      register: longhorn_uuid
+      changed_when: false
+
+    - name: Mount the data disk at the Longhorn dir, persistently (by UUID)
+      ansible.posix.mount:
+        path: "{{ longhorn_data_dir }}"
+        src: "UUID={{ longhorn_uuid.stdout }}"
+        fstype: ext4
+        opts: defaults,nofail
+        state: mounted
+      when: longhorn_uuid.stdout | length > 0
