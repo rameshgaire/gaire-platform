@@ -38,3 +38,18 @@
         wait: true
         wait_timeout: 10m
         kubeconfig: "{{ kubeconfig }}"
+
+    - name: Copy root app-of-apps manifest to the master
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../kubernetes/argocd/root.yaml"
+        dest: /tmp/argocd-root.yaml
+        mode: "0644"
+
+    - name: Bootstrap the app-of-apps (root Application)
+      ansible.builtin.command:
+        cmd: k3s kubectl apply -f /tmp/argocd-root.yaml
+      register: root_apply
+      changed_when: "'created' in root_apply.stdout or 'configured' in root_apply.stdout"
+      # root references the private repo via the ArgoCD deploy-key secret, which
+      # is control-node-local and recreated manually on rebuild (see README).
+      # This CREATES the root Application; it syncs once that secret exists.
