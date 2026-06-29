@@ -1,0 +1,20 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: memos
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: git@github.com:rameshgaire/gaire-platform.git
+    targetRevision: main
+    path: kubernetes/apps/memos
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: memos
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

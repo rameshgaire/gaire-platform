@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: memos
+  namespace: memos
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate            # single RWO volume — don't run 2 pods fighting for it during rollout
+  selector:
+    matchLabels:
+      app: memos
+  template:
+    metadata:
+      labels:
+        app: memos
+    spec:
+      containers:
+        - name: memos
+          image: neosmemo/memos:0.22.5    # pinned (not :latest) for reproducibility
+          ports:
+            - containerPort: 5230
+          volumeMounts:
+            - name: data
+              mountPath: /var/opt/memos    # Memos' default data dir
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: memos-data
