@@ -16,7 +16,7 @@ spec:
         app: n8n
     spec:
       securityContext:
-        fsGroup: 1000          # n8n runs as uid 1000; make the Longhorn volume writable by it
+        fsGroup: 1000
       containers:
         - name: n8n
           image: n8nio/n8n:1.123.61
@@ -35,6 +35,10 @@ spec:
               value: "1"
             - name: GENERIC_TIMEZONE
               value: "Australia/Sydney"
+            - name: N8N_RUNNERS_ENABLED
+              value: "true"
+            - name: DB_SQLITE_POOL_SIZE
+              value: "5"
           volumeMounts:
             - name: data
               mountPath: /home/node/.n8n
