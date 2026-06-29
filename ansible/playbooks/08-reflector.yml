@@ -1,0 +1,32 @@
+---
+# Installs Reflector (emberstack) via Helm. Reflector replicates the wildcard
+# TLS secret into app namespaces, so we issue the cert ONCE and reflect it
+# everywhere — avoiding Let's Encrypt's 5/week duplicate-cert limit.
+# Runs ON the master (K3s kubeconfig). Same pattern as 05/06/07.
+
+- name: Install Reflector (secret replication controller)
+  hosts: master
+  become: true
+  gather_facts: false
+
+  vars:
+    reflector_version: "10.0.54"
+    reflector_namespace: reflector
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+
+  tasks:
+    - name: Add the Emberstack Helm repo
+      kubernetes.core.helm_repository:
+        name: emberstack
+        repo_url: https://emberstack.github.io/helm-charts
+
+    - name: Install/upgrade Reflector
+      kubernetes.core.helm:
+        name: reflector
+        chart_ref: emberstack/reflector
+        chart_version: "{{ reflector_version }}"
+        release_namespace: "{{ reflector_namespace }}"
+        create_namespace: true
+        wait: true
+        wait_timeout: 5m
+        kubeconfig: "{{ kubeconfig }}"
