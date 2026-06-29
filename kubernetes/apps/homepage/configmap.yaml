@@ -6,11 +6,6 @@ metadata:
 data:
   settings.yaml: |
     title: gaire-platform
-    theme: dark
-  widgets.yaml: |
-    - resources:
-        cpu: true
-        memory: true
   services.yaml: |
     - Lab:
         - Memos:
@@ -19,14 +14,11 @@ data:
         - ArgoCD:
             href: https://argocd.gairelab.uk
             description: GitOps
-        - Whoami:
-            href: https://hello.gairelab.uk
-            description: Test app
+  widgets.yaml: |
+    []
   bookmarks.yaml: |
-    - Docs:
-        - GitHub:
-            - abbr: GH
-              href: https://github.com/rameshgaire/gaire-platform
-  # Homepage requires this to allow access via the ingress hostname
+    []
+  docker.yaml: |
+    {}
   kubernetes.yaml: |
-    mode: disabled
+    {}
