@@ -1,0 +1,6 @@
+# ArgoCD Helm values — gaire-platform
+# Traefik terminates TLS at the edge (wildcard cert), so ArgoCD serves plain
+# HTTP internally — no double-TLS. The Ingress (next stage) handles HTTPS.
+configs:
+  params:
+    server.insecure: true

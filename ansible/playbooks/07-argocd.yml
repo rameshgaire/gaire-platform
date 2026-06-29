@@ -1,0 +1,40 @@
+---
+# Installs ArgoCD via Helm. Runs ON the master (K3s kubeconfig + local API) —
+# no SSH tunnel needed. Same pattern as 05-longhorn / 06-ingress.
+# server.insecure=true (in values) so Traefik can terminate TLS in front of it.
+
+- name: Install ArgoCD (GitOps controller)
+  hosts: master
+  become: true
+  gather_facts: false
+
+  vars:
+    argocd_version: "9.7.1"          # chart 9.7.1 -> Argo CD app v3.4.4
+    argocd_namespace: argocd
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    values_remote_path: /tmp/argocd-values.yaml
+
+  tasks:
+    - name: Add the Argo Helm repo
+      kubernetes.core.helm_repository:
+        name: argo
+        repo_url: https://argoproj.github.io/argo-helm
+
+    - name: Copy ArgoCD values to the master
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../kubernetes/infrastructure/argocd/values.yaml"
+        dest: "{{ values_remote_path }}"
+        mode: "0644"
+
+    - name: Install/upgrade ArgoCD
+      kubernetes.core.helm:
+        name: argocd
+        chart_ref: argo/argo-cd
+        chart_version: "{{ argocd_version }}"
+        release_namespace: "{{ argocd_namespace }}"
+        create_namespace: true
+        values_files:
+          - "{{ values_remote_path }}"
+        wait: true
+        wait_timeout: 10m
+        kubeconfig: "{{ kubeconfig }}"
