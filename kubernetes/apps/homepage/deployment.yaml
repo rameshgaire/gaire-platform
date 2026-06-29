@@ -20,11 +20,31 @@ spec:
             - containerPort: 3000
           env:
             - name: HOMEPAGE_ALLOWED_HOSTS
-              value: "homepage.gairelab.uk"   # v0.9+ requires this or it refuses the request
+              value: "homepage.gairelab.uk"
           volumeMounts:
-            - name: config
+            - name: config            # writable dir (homepage needs to mkdir logs/)
               mountPath: /app/config
+            - name: cfg-files         # config files layered in via subPath (read-only)
+              mountPath: /app/config/settings.yaml
+              subPath: settings.yaml
+            - name: cfg-files
+              mountPath: /app/config/services.yaml
+              subPath: services.yaml
+            - name: cfg-files
+              mountPath: /app/config/widgets.yaml
+              subPath: widgets.yaml
+            - name: cfg-files
+              mountPath: /app/config/bookmarks.yaml
+              subPath: bookmarks.yaml
+            - name: cfg-files
+              mountPath: /app/config/docker.yaml
+              subPath: docker.yaml
+            - name: cfg-files
+              mountPath: /app/config/kubernetes.yaml
+              subPath: kubernetes.yaml
       volumes:
         - name: config
+          emptyDir: {}
+        - name: cfg-files
           configMap:
             name: homepage-config
