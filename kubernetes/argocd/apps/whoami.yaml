@@ -1,0 +1,22 @@
+# ArgoCD Application: keeps kubernetes/apps/whoami/ synced to the cluster.
+# This is the per-app on/off unit — delete this Application to remove whoami.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: whoami
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: git@github.com:rameshgaire/gaire-platform.git
+    targetRevision: main
+    path: kubernetes/apps/whoami
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: demo
+  syncPolicy:
+    automated:
+      prune: true        # if you delete a manifest from the folder, ArgoCD removes it from the cluster
+      selfHeal: true     # if something drifts from Git, ArgoCD reconciles it back
+    syncOptions:
+      - CreateNamespace=true   # ArgoCD creates the 'demo' namespace if absent
