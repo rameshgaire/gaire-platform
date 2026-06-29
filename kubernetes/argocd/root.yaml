@@ -1,0 +1,22 @@
+# App-of-apps: one Application that manages all the others.
+# It watches kubernetes/argocd/applications/ and creates an ArgoCD Application
+# for each manifest there. Apply this ONCE; thereafter adding an app = commit
+# a manifest to applications/ (no kubectl apply needed).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: git@github.com:rameshgaire/gaire-platform.git
+    targetRevision: main
+    path: kubernetes/argocd/applications
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true        # remove an app's Application if its manifest is deleted from the folder
+      selfHeal: true
