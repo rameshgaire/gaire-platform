@@ -32,11 +32,17 @@ single wildcard certificate replicated across namespaces (Reflector).
 | Ollama      | internal only (11434)      | model server| 15 Gi Longhorn | 1        |
 | Open WebUI  | `openwebui.gairelab.uk`    | LLM chat UI | 5 Gi Longhorn  | 1        |
 | AnythingLLM | `anythingllm.gairelab.uk`  | RAG / docs  | 10 Gi Longhorn | **0**    |
+| Grafana     | `grafana.gairelab.uk`      | dashboards  | 2 Gi (single-replica) | 1 |
 
 AnythingLLM is deployed but scaled to zero by design (see "The LLM stack") —
 flip `replicas: 0 → 1` in Git when you want to use it, and consider scaling
 Open WebUI down at the same time so they're not both competing with Ollama
 for RAM.
+
+Monitoring (Prometheus + Grafana + Loki) is infrastructure, not an app — see
+"Monitoring" below for why, and note it was installed onto an already-running
+cluster; it has not yet been proven via a full `01→10` rebuild from scratch.
+Treat that as the real test the next time you rebuild.
 
 ---
 
@@ -68,6 +74,14 @@ for RAM.
   (recreated from the Ansible Vault on every install — no manual secret step).
   A root "app-of-apps" Application creates one ArgoCD Application per app.
   Deploying/removing an app = committing a manifest.
+- **Monitoring:** Prometheus + Grafana + Loki (`kube-prometheus-stack` +
+  `loki-stack`), installed as infrastructure via Ansible (not an ArgoCD
+  Application) — it watches every namespace cluster-wide and isn't scoped to
+  a single app's lifecycle. Grafana is reachable at `grafana.gairelab.uk`.
+- **Storage classes:** `longhorn` (default, 2 replicas) for anything that
+  matters; `longhorn-single-replica` (1 replica) for lower-stakes volumes
+  where you'd rather save disk than survive a single node failure — currently
+  used by the monitoring stack's PVCs. See "Storage" below.
 
 ---
 
@@ -95,7 +109,8 @@ for RAM.
 │   │   ├── 06-ingress.yml           # Traefik + cert-manager + Cloudflare secret + both ClusterIssuers (with readiness waits)
 │   │   ├── 07-argocd.yml            # ArgoCD + repo deploy-key Secret (from vault) + its Ingress + root app-of-apps
 │   │   ├── 08-reflector.yml         # install Reflector (Helm) — replicates the wildcard TLS secret
-│   │   └── 09-wildcard.yml          # issue the ONE source wildcard Certificate (with readiness waits)
+│   │   ├── 09-wildcard.yml          # issue the ONE source wildcard Certificate (with readiness waits)
+│   │   └── 10-monitoring.yml        # single-replica StorageClass + kube-prometheus-stack + loki-stack + Grafana Ingress
 │   └── scripts/
 │       └── kube-tunnel.sh           # SSH tunnel to the K3s API (run, leave open) for local kubectl
 ├── docs/                            # (reserved for future design notes / diagrams)
@@ -110,7 +125,6 @@ for RAM.
 │   │   └── anythingllm/                     # RAG (namespace, PVC, Deployment [replicas:0], Service, Ingress)
 │   ├── infrastructure/              # cluster services (not user apps) — no per-app Certificates live here anymore
 │   │   ├── traefik/values.yaml              # Helm values (hostPort 80/443, pinned to master)
-│   │   ├── longhorn/values.yaml             # Helm values (2 replicas, /var/lib/longhorn)
 │   │   ├── argocd/
 │   │   │   ├── values.yaml                   # Helm values (server.insecure: true)
 │   │   │   └── ingress.yaml                  # Ingress for argocd.gairelab.uk (applied by 07-argocd.yml)
@@ -118,7 +132,13 @@ for RAM.
 │   │   │   ├── cluster-issuer-staging.yaml          # Let's Encrypt staging (DNS-01 via Cloudflare)
 │   │   │   ├── cluster-issuer-production.yaml       # Let's Encrypt production (trusted)
 │   │   │   └── wildcard-source.yaml                 # THE single reflected source cert (see TLS section)
-│   │   └── monitoring/              # placeholder (Prometheus/Grafana/Loki — future)
+│   │   ├── longhorn/
+│   │   │   ├── values.yaml                          # Helm values (2 replicas, /var/lib/longhorn)
+│   │   │   └── single-replica-storageclass.yaml     # "longhorn-single-replica" — 1 replica, lower-stakes volumes
+│   │   └── monitoring/
+│   │       ├── kube-prometheus-stack-values.yaml    # trimmed resources + retention for a lab
+│   │       ├── loki-stack-values.yaml               # Loki+Promtail only, Grafana disabled (use the one above)
+│   │       └── ingress.yaml                         # Grafana Ingress (grafana.gairelab.uk)
 │   └── argocd/
 │       ├── root.yaml                # app-of-apps: watches applications/ and creates an App per file
 │       └── applications/            # one ArgoCD Application manifest per app (the on/off toggles)
@@ -317,8 +337,13 @@ ansible-playbook playbooks/06-ingress.yml       # Traefik + cert-manager + Cloud
 ansible-playbook playbooks/07-argocd.yml        # ArgoCD + repo deploy-key Secret (from vault) + its Ingress + root
 ansible-playbook playbooks/08-reflector.yml     # Reflector
 ansible-playbook playbooks/09-wildcard.yml      # issue the ONE source wildcard cert (waits for Ready + Secret)
+ansible-playbook playbooks/10-monitoring.yml    # single-replica StorageClass + Prometheus/Grafana/Loki + Grafana ingress
 cd ..
 ```
+
+Playbook 10 is the least-proven of the set — see "Monitoring" below for why —
+so watch its output closely on the next full rebuild rather than assuming
+it'll be as uneventful as 01–09 have become.
 
 Every step above is fully unattended — no manual `kubectl apply`, no manual
 secret creation. This is a change from earlier in the project: the ArgoCD
@@ -654,9 +679,8 @@ and AnythingLLM simultaneously unless headroom is confirmed via
 
 ### AnythingLLM — deployed, scaled to zero
 
-- Image `mintplexlabs/anythingllm:latest` — **pin an exact tag before flipping
-  to `replicas: 1`**; `:latest` was used as a placeholder during the initial
-  scale-to-zero deploy since it wasn't live yet.
+- Image pinned to `mintplexlabs/anythingllm:1.15.0` (was `:latest` during the
+  initial scale-to-zero deploy; pinned once a real stable tag was confirmed).
 - Requires `securityContext.capabilities.add: ["SYS_ADMIN"]` (the Docker
   `cap_add: SYS_ADMIN` requirement from AnythingLLM's own docs, translated to
   Kubernetes) and `fsGroup: 1000` on the PVC.
@@ -665,14 +689,110 @@ and AnythingLLM simultaneously unless headroom is confirmed via
   `OLLAMA_MODEL_PREF=llama3.2:3b`, `EMBEDDING_ENGINE=ollama`,
   `EMBEDDING_BASE_PATH=<same as OLLAMA_BASE_PATH>`,
   `EMBEDDING_MODEL_PREF=nomic-embed-text:latest`, `VECTOR_DB=lancedb`,
-  `STORAGE_DIR=/app/server/storage`, and a `JWT_SECRET`.
-- **`JWT_SECRET` is currently a generated value inlined as plaintext in
-  `deployment.yaml`** — a documented lab tradeoff, acceptable while the app is
-  scaled to zero, but worth converting to a proper Kubernetes Secret (same
-  pattern as the Cloudflare token) before this goes live for real use. Not yet
-  done — flagged in the Roadmap.
-- To turn it on: edit `replicas: 0 → 1` in Git, commit, push. Consider scaling
-  Open WebUI to 0 at the same time (see resource table above).
+  `STORAGE_DIR=/app/server/storage`.
+- **`JWT_SECRET` is a Kubernetes Secret (`anythingllm-secrets`), referenced via
+  `valueFrom.secretKeyRef`** — not inline plaintext. The Secret itself is
+  intentionally **not committed to Git** (there's nothing to persist: the
+  PVC is wiped on every destroy anyway, so a fresh random value each time is
+  fine). This means it's a genuine **manual step, but only if/when you flip
+  AnythingLLM on**:
+  ```bash
+  kubectl -n anythingllm create secret generic anythingllm-secrets \
+    --from-literal=JWT_SECRET="$(openssl rand -hex 32)"
+  ```
+  Without this Secret present, the pod fails to start (missing `secretKeyRef`).
+  (If the Secret already exists and you need to rotate it: `kubectl delete
+  secret` first — `create` fails on an existing name rather than updating it.)
+- To turn it on: recreate the Secret above, then edit `replicas: 0 → 1` in
+  Git, commit, push. Consider scaling Open WebUI to 0 at the same time (see
+  resource table above). The `1.15.0` pin has never actually been run yet —
+  watch the pod carefully the first time, the way every other app here has
+  had at least one first-run surprise.
+
+---
+
+## Storage classes
+
+Two Longhorn StorageClasses exist:
+
+- **`longhorn`** (default, 2 replicas) — everything that stores real data:
+  Memos, n8n, Ollama's models, Open WebUI, AnythingLLM.
+- **`longhorn-single-replica`** (1 replica) — for volumes where losing a
+  single node's copy is an acceptable risk in exchange for using half the
+  disk. Currently used by the monitoring stack (Prometheus, Loki, Grafana).
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: longhorn-single-replica
+provisioner: driver.longhorn.io
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+parameters:
+  numberOfReplicas: "1"
+  staleReplicaTimeout: "2880"
+```
+
+**Why this exists — a real capacity lesson:** adding the monitoring stack
+requested ~22 Gi of new 2-replica volumes on top of an already-committed ~40 Gi
+across the existing apps, against only 50 Gi of raw disk *per worker* (100 Gi
+total). Several Prometheus/Loki volumes came up `faulted`/`unknown` in
+Longhorn — not because of a bad values.yaml, but because **disk space is a
+separate constraint from CPU/RAM, and `kubectl top nodes` tells you nothing
+about it.** The fix was to move the monitoring stack's lower-stakes volumes to
+a single-replica class, roughly halving their real disk footprint.
+
+**Before adding anything storage-heavy, check disk — not just `kubectl top`:**
+
+```bash
+kubectl -n longhorn-system get volumes                 # any "faulted"/"unknown" ROBUSTNESS is a red flag
+kubectl -n longhorn-system get nodes.longhorn.io -o custom-columns=NAME:.metadata.name,DISK:.status.diskStatus
+# or, directly on a worker:
+ssh -F ~/.ssh/config k3s-worker01 df -h /var/lib/longhorn
+```
+
+**PVC `storageClassName` is immutable once bound.** Trying to change an
+existing PVC's StorageClass via a Helm upgrade fails with `spec is immutable
+after creation` — the fix is to delete the PVC (and whatever pod is using it)
+so it gets recreated fresh against the new class, not patch it in place.
+
+---
+
+## Monitoring (Prometheus, Grafana, Loki)
+
+Installed as **infrastructure** (Ansible, `10-monitoring.yml`), not an ArgoCD
+Application — same reasoning as Traefik/cert-manager/Reflector: it watches
+every namespace cluster-wide and isn't scoped to a single app's lifecycle.
+
+- **`kube-prometheus-stack`** (prometheus-community, pinned `87.5.1`) —
+  Prometheus, Grafana, Alertmanager, kube-state-metrics, node-exporter, all in
+  one chart. Retention trimmed to 3 days (lab, not production); resource
+  requests/limits trimmed to fit alongside the LLM stack.
+- **`loki-stack`** (grafana, pinned `2.10.3`) — Loki + Promtail for logs.
+  Its bundled Grafana is disabled (`grafana.enabled: false`) since
+  kube-prometheus-stack already provides one; Loki is wired in as an
+  additional Grafana datasource instead. Note: `loki-stack` is the simpler,
+  if now-legacy, chart — Grafana's newer split `loki` + `alloy`/`promtail`
+  charts are more capable but more complex; not worth it for a lab.
+- Both use **`longhorn-single-replica`** for their PVCs (see "Storage classes"
+  above) — Prometheus 10 Gi, Loki 10 Gi, Grafana 2 Gi.
+- **Grafana** is reachable at `grafana.gairelab.uk` via an Ingress
+  (`kubernetes/infrastructure/monitoring/ingress.yaml`, applied by the same
+  playbook) referencing the Reflector-provided wildcard secret — no separate
+  Certificate, same as every app.
+- **Default login is `admin` / `prom-operator`** (kube-prometheus-stack's
+  built-in default) — change it on first login, Settings → Profile.
+- Confirm Loki is wired up: Grafana → Connections → Data sources → should
+  list both **Prometheus** and **Loki**.
+
+> **Not yet proven via a full rebuild.** This was installed onto an
+> already-running cluster (`10-monitoring.yml` run standalone, not as part of
+> a `01→10` sequence from a fresh destroy). The next full rebuild is the real
+> test of whether it comes back cleanly in sequence — watch it closely the
+> first time through, the same way every other playbook needed at least one
+> fix the first time it ran end-to-end.
 
 ---
 
@@ -841,6 +961,18 @@ zero, flagged for hardening before real use.
   pattern).
 - **YAML: spaces only, never tabs.** Verify multi-play files with
   `ansible-playbook <file> --list-tasks` after every edit.
+- **Disk space is invisible to `kubectl top` and Helm's own success reporting.**
+  Adding the monitoring stack's ~22 Gi of 2-replica volumes caused several
+  Longhorn volumes to go `faulted`/`unknown` — not a values.yaml problem, a
+  genuine capacity limit that neither `kubectl top nodes` (CPU/memory only)
+  nor Helm's "STATUS: deployed" caught. Check
+  `kubectl -n longhorn-system get volumes` (watch for `faulted`/`unknown`
+  ROBUSTNESS) and real disk usage on the workers *before* adding anything
+  storage-heavy, not just node CPU/memory.
+- **A PVC's `storageClassName` is immutable once bound.** Trying to move an
+  existing PVC to a different StorageClass via `helm upgrade` fails with
+  `spec is immutable after creation` — delete the PVC (and the pod using it)
+  so it's recreated fresh, don't try to patch it in place.
 - **Nested YAML block scalars are fragile — avoid them.** Templating a
   multi-line SSH private key into a YAML `content: |` block (itself inside an
   Ansible task) via a Jinja `indent()` filter produced `ssh: no key found` —
@@ -931,9 +1063,11 @@ zero, flagged for hardening before real use.
 - [x] Memos, homepage, n8n — running, GitOps-managed
 - [x] Ollama + Open WebUI — running; models pulled (`llama3.2:3b`, `nomic-embed-text`)
 - [x] AnythingLLM — deployed, scaled to zero, ready to flip on
+- [x] AnythingLLM hardening: `JWT_SECRET` via Kubernetes Secret, image pinned to `1.15.0`
+- [x] Monitoring (Prometheus + Grafana + Loki) installed — **not yet proven via a full rebuild**
+- [x] `longhorn-single-replica` StorageClass for lower-stakes volumes (disk-capacity lesson)
 - [ ] Flip `wildcard-source.yaml` to `letsencrypt-production` once the 1-week duplicate-cert cooldown clears
-- [ ] Convert AnythingLLM's `JWT_SECRET` from inline plaintext to a proper Secret
-- [ ] Pin an exact AnythingLLM image tag before flipping it to `replicas: 1`
-- [ ] Monitoring (Prometheus / Grafana / Loki)
+- [ ] Verify the full `01→10` sequence on the next destroy/rebuild, especially playbook 10
+- [ ] Monitor real disk usage as more storage-heavy apps get added — 100 Gi raw (2×50 Gi) is not unlimited
 - [ ] Off-cluster backups (Longhorn → object storage) for app data across rebuilds
 - [ ] Optional: seal secrets (SealedSecrets/SOPS) as a further hardening layer
