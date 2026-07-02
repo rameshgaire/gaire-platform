@@ -1,0 +1,20 @@
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: wildcard-source
+  namespace: cert-manager
+spec:
+  secretName: wildcard-gairelab-uk-tls
+  secretTemplate:
+    annotations:
+      reflector.v1.k8s.emberstack.com/reflection-allowed: "true"
+      reflector.v1.k8s.emberstack.com/reflection-auto-enabled: "true"
+      reflector.v1.k8s.emberstack.com/reflection-allowed-namespaces: "*"
+      reflector.v1.k8s.emberstack.com/reflection-auto-namespaces: "memos,homepage,n8n,demo,argocd,openwebui,anythingllm,ollama"
+  issuerRef:
+    name: letsencrypt-staging
+    kind: ClusterIssuer
+  dnsNames:
+    - "gairelab.uk"
+    - "*.gairelab.uk"
