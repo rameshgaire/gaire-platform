@@ -30,3 +30,21 @@
         cmd: k3s kubectl apply -f /tmp/wildcard-source.yaml
       register: wc_apply
       changed_when: "'created' in wc_apply.stdout or 'configured' in wc_apply.stdout"
+    - name: Wait for wildcard Certificate to become Ready
+      ansible.builtin.command:
+        cmd: >
+          k3s kubectl wait
+          certificate/wildcard-source
+          -n cert-manager
+          --for=condition=Ready
+          --timeout=600s
+    - name: Wait for wildcard TLS Secret to exist
+      ansible.builtin.command:
+        cmd: >
+          k3s kubectl get secret
+          wildcard-gairelab-uk-tls
+          -n cert-manager
+      register: wildcard_secret
+      retries: 30
+      delay: 5
+      until: wildcard_secret.rc == 0

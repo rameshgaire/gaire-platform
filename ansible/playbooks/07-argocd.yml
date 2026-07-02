@@ -1,12 +1,16 @@
 ---
-# Installs ArgoCD via Helm. Runs ON the master (K3s kubeconfig + local API) —
-# no SSH tunnel needed. Same pattern as 05-longhorn / 06-ingress.
+# Installs ArgoCD via Helm, creates the repo deploy-key Secret (from the vault),
+# then bootstraps the root app-of-apps. Runs ON the master (K3s kubeconfig +
+# local API) — no SSH tunnel needed. Same pattern as 05-longhorn / 06-ingress.
 # server.insecure=true (in values) so Traefik can terminate TLS in front of it.
 
 - name: Install ArgoCD (GitOps controller)
   hosts: master
   become: true
   gather_facts: false
+
+  vars_files:
+    - ../../secrets/ansible-secrets.yml
 
   vars:
     argocd_version: "9.7.1"          # chart 9.7.1 -> Argo CD app v3.4.4
@@ -39,6 +43,37 @@
         wait_timeout: 10m
         kubeconfig: "{{ kubeconfig }}"
 
+    - name: Render the ArgoCD repo deploy-key Secret on the master
+      ansible.builtin.copy:
+        dest: /tmp/argocd-repo-secret.yaml
+        mode: "0600"
+        content: |
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: repo-gaire-platform
+            namespace: argocd
+            labels:
+              argocd.argoproj.io/secret-type: repository
+          type: Opaque
+          stringData:
+            type: git
+            url: git@github.com:rameshgaire/gaire-platform.git
+            sshPrivateKey: |
+              {{ argocd_deploy_key | indent(14) }}
+      no_log: true
+
+    - name: Apply the ArgoCD repo deploy-key Secret
+      ansible.builtin.command:
+        cmd: k3s kubectl apply -f /tmp/argocd-repo-secret.yaml
+      register: repo_secret
+      changed_when: "'created' in repo_secret.stdout or 'configured' in repo_secret.stdout"
+
+    - name: Remove the rendered Secret file from the master
+      ansible.builtin.file:
+        path: /tmp/argocd-repo-secret.yaml
+        state: absent
+
     - name: Copy root app-of-apps manifest to the master
       ansible.builtin.copy:
         src: "{{ playbook_dir }}/../../kubernetes/argocd/root.yaml"
@@ -50,6 +85,5 @@
         cmd: k3s kubectl apply -f /tmp/argocd-root.yaml
       register: root_apply
       changed_when: "'created' in root_apply.stdout or 'configured' in root_apply.stdout"
-      # root references the private repo via the ArgoCD deploy-key secret, which
-      # is control-node-local and recreated manually on rebuild (see README).
-      # This CREATES the root Application; it syncs once that secret exists.
+      # root references the private repo via the repo-gaire-platform secret
+      # created above (from the vault) — no manual step needed anymore.

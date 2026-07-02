@@ -116,6 +116,14 @@
       register: issuer
       changed_when: "'created' in issuer.stdout or 'configured' in issuer.stdout"
 
+    - name: Wait for staging ClusterIssuer to become Ready
+      ansible.builtin.command:
+        cmd: >
+          k3s kubectl wait
+          clusterissuer/letsencrypt-staging
+          --for=condition=Ready
+          --timeout=180s
+
     -  name: Copy the production ClusterIssuer to the master
        ansible.builtin.copy:
         src: "{{ playbook_dir }}/../../kubernetes/infrastructure/cert-manager/cluster-issuer-production.yaml"
@@ -127,3 +135,11 @@
         cmd: k3s kubectl apply -f /tmp/cluster-issuer-production.yaml
       register: prod_issuer
       changed_when: "'created' in prod_issuer.stdout or 'configured' in prod_issuer.stdout"
+
+    - name: Wait for production ClusterIssuer to become Ready
+      ansible.builtin.command:
+        cmd: >
+          k3s kubectl wait
+          clusterissuer/letsencrypt-production
+          --for=condition=Ready
+          --timeout=180s
