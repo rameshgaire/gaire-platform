@@ -29,7 +29,10 @@ spec:
             - name: STORAGE_DIR
               value: "/app/server/storage"
             - name: JWT_SECRET
-              value: "e9b831a6a98df1109fd1a7df454571568a6b02d0bd0186a76b8e6739dba63cf7"
+              valueFrom:
+                secretKeyRef:
+                  name: anythingllm-secrets
+                  key: JWT_SECRET
             - name: LLM_PROVIDER
               value: "ollama"
             - name: OLLAMA_BASE_PATH
