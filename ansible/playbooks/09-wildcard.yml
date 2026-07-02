@@ -1,0 +1,32 @@
+---
+# Issues the ONE wildcard certificate (source of truth) in the cert-manager
+# namespace. Reflector (installed in 08) replicates its secret into every app
+# namespace listed in the Certificate's reflection annotations. This avoids
+# Let's Encrypt's duplicate-cert limit (5/week for the same name set) by never
+# issuing more than once per rebuild.
+#
+# NOTE: wildcard-source.yaml currently points at letsencrypt-staging (untrusted
+# but effectively unlimited) while validating this flow / recovering from a
+# production rate limit. Flip issuerRef to letsencrypt-production when ready —
+# see README "TLS — issue once, replicate everywhere".
+
+- name: Issue the single reflected wildcard certificate
+  hosts: master
+  become: true
+  gather_facts: false
+
+  vars:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+
+  tasks:
+    - name: Copy the wildcard source Certificate to the master
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../kubernetes/infrastructure/cert-manager/wildcard-source.yaml"
+        dest: /tmp/wildcard-source.yaml
+        mode: "0644"
+
+    - name: Apply the wildcard source Certificate
+      ansible.builtin.command:
+        cmd: k3s kubectl apply -f /tmp/wildcard-source.yaml
+      register: wc_apply
+      changed_when: "'created' in wc_apply.stdout or 'configured' in wc_apply.stdout"
