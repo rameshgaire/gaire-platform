@@ -1,0 +1,25 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: grafana
+  namespace: monitoring
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - grafana.gairelab.uk
+      secretName: wildcard-gairelab-uk-tls
+  rules:
+    - host: grafana.gairelab.uk
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                # kube-prometheus-stack's Grafana service name convention:
+                name: kube-prometheus-stack-grafana
+                port:
+                  number: 80

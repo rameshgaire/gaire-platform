@@ -1,0 +1,46 @@
+# Trimmed for a 2-worker / 8GB-per-node lab cluster already running an LLM stack.
+prometheus:
+  prometheusSpec:
+    retention: 3d                    # short retention — this is a lab, not production
+    resources:
+      requests: { memory: 512Mi, cpu: 200m }
+      limits:   { memory: 1Gi,   cpu: 500m }
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: longhorn
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 10Gi
+
+alertmanager:
+  alertmanagerSpec:
+    resources:
+      requests: { memory: 64Mi, cpu: 50m }
+      limits:   { memory: 128Mi, cpu: 100m }
+
+grafana:
+  resources:
+    requests: { memory: 128Mi, cpu: 50m }
+    limits:   { memory: 256Mi, cpu: 200m }
+  persistence:
+    enabled: true
+    storageClassName: longhorn
+    size: 2Gi
+  # Loki gets added as a datasource once loki-stack is installed (see below)
+  additionalDataSources:
+    - name: Loki
+      type: loki
+      url: http://loki.monitoring.svc.cluster.local:3100
+      access: proxy
+
+kube-state-metrics:
+  resources:
+    requests: { memory: 64Mi, cpu: 25m }
+    limits:   { memory: 128Mi, cpu: 100m }
+
+prometheus-node-exporter:
+  resources:
+    requests: { memory: 32Mi, cpu: 25m }
+    limits:   { memory: 64Mi, cpu: 50m }

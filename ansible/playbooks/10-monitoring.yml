@@ -1,0 +1,78 @@
+---
+# Monitoring stack: Prometheus + Grafana + Alertmanager (kube-prometheus-stack)
+# and Loki + Promtail (loki-stack), both in the `monitoring` namespace.
+# Treated as infrastructure (like Traefik/cert-manager/Reflector) — installed
+# by Ansible, NOT an ArgoCD Application — because it watches the whole cluster
+# across every namespace and needs its own CRDs, not app-lifecycle semantics.
+
+- name: Install monitoring stack (Prometheus, Grafana, Loki)
+  hosts: master
+  become: true
+  gather_facts: false
+
+  vars:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    monitoring_namespace: monitoring
+    kps_version: "87.5.1"        # confirmed current
+    loki_stack_version: "2.10.3"  # confirmed current
+
+  tasks:
+    - name: Add the prometheus-community Helm repo
+      kubernetes.core.helm_repository:
+        name: prometheus-community
+        repo_url: https://prometheus-community.github.io/helm-charts
+
+    - name: Add the Grafana Helm repo
+      kubernetes.core.helm_repository:
+        name: grafana
+        repo_url: https://grafana.github.io/helm-charts
+
+    - name: Copy kube-prometheus-stack values to the master
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../kubernetes/infrastructure/monitoring/kube-prometheus-stack-values.yaml"
+        dest: /tmp/kps-values.yaml
+        mode: "0644"
+
+    - name: Install/upgrade kube-prometheus-stack
+      kubernetes.core.helm:
+        name: kube-prometheus-stack
+        chart_ref: prometheus-community/kube-prometheus-stack
+        chart_version: "{{ kps_version }}"
+        release_namespace: "{{ monitoring_namespace }}"
+        create_namespace: true
+        values_files:
+          - /tmp/kps-values.yaml
+        wait: true
+        wait_timeout: 10m
+        kubeconfig: "{{ kubeconfig }}"
+
+    - name: Copy loki-stack values to the master
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../kubernetes/infrastructure/monitoring/loki-stack-values.yaml"
+        dest: /tmp/loki-values.yaml
+        mode: "0644"
+
+    - name: Install/upgrade loki-stack
+      kubernetes.core.helm:
+        name: loki-stack
+        chart_ref: grafana/loki-stack
+        chart_version: "{{ loki_stack_version }}"
+        release_namespace: "{{ monitoring_namespace }}"
+        create_namespace: true
+        values_files:
+          - /tmp/loki-values.yaml
+        wait: true
+        wait_timeout: 10m
+        kubeconfig: "{{ kubeconfig }}"
+
+    - name: Copy the Grafana Ingress manifest to the master
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../kubernetes/infrastructure/monitoring/ingress.yaml"
+        dest: /tmp/grafana-ingress.yaml
+        mode: "0644"
+
+    - name: Apply the Grafana Ingress
+      ansible.builtin.command:
+        cmd: k3s kubectl apply -f /tmp/grafana-ingress.yaml
+      register: grafana_ingress
+      changed_when: "'created' in grafana_ingress.stdout or 'configured' in grafana_ingress.stdout"
