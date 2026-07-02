@@ -27,10 +27,10 @@ spec:
               value: "true"               # keep login enabled (it's internet-reachable)
           resources:
             requests:
-              memory: "512Mi"
+              memory: "2Gi"
               cpu: "250m"
             limits:
-              memory: "1Gi"
+              memory: "2Gi"
               cpu: "1"
           volumeMounts:
             - name: data
