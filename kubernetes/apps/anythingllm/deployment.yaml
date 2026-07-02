@@ -19,7 +19,7 @@ spec:
         fsGroup: 1000
       containers:
         - name: anythingllm
-          image: mintplexlabs/anythingllm:latest    # verify a pinned tag before flipping to replicas:1
+          image: mintplexlabs/anythingllm:1.15.0    # verify a pinned tag before flipping to replicas:1
           securityContext:
             capabilities:
               add: ["SYS_ADMIN"]          # required by AnythingLLM's docs (Docker cap_add)
