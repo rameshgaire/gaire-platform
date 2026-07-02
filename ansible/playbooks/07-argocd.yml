@@ -3,6 +3,13 @@
 # then bootstraps the root app-of-apps. Runs ON the master (K3s kubeconfig +
 # local API) — no SSH tunnel needed. Same pattern as 05-longhorn / 06-ingress.
 # server.insecure=true (in values) so Traefik can terminate TLS in front of it.
+#
+# The deploy-key Secret is built via `k3s kubectl create secret --from-file`,
+# NOT by templating the key into a YAML block scalar — a multi-line SSH key
+# nested inside another YAML block scalar is fragile (whitespace/indent
+# mistakes silently corrupt the key). Writing the raw key to a file and using
+# --from-file reads it byte-for-byte, exactly like the manual recovery
+# procedure that's proven reliable twice today.
 
 - name: Install ArgoCD (GitOps controller)
   hosts: master
@@ -17,6 +24,7 @@
     argocd_namespace: argocd
     kubeconfig: /etc/rancher/k3s/k3s.yaml
     values_remote_path: /tmp/argocd-values.yaml
+    repo_url: "git@github.com:rameshgaire/gaire-platform.git"
 
   tasks:
     - name: Add the Argo Helm repo
@@ -43,36 +51,49 @@
         wait_timeout: 10m
         kubeconfig: "{{ kubeconfig }}"
 
-    - name: Render the ArgoCD repo deploy-key Secret on the master
+    - name: Write the ArgoCD deploy private key to a file on the master
       ansible.builtin.copy:
-        dest: /tmp/argocd-repo-secret.yaml
+        content: "{{ argocd_deploy_key }}"
+        dest: /tmp/argocd-deploy-key
         mode: "0600"
-        content: |
-          apiVersion: v1
-          kind: Secret
-          metadata:
-            name: repo-gaire-platform
-            namespace: argocd
-            labels:
-              argocd.argoproj.io/secret-type: repository
-          type: Opaque
-          stringData:
-            type: git
-            url: git@github.com:rameshgaire/gaire-platform.git
-            sshPrivateKey: |
-              {{ argocd_deploy_key | indent(14) }}
       no_log: true
 
-    - name: Apply the ArgoCD repo deploy-key Secret
+    - name: Delete any existing (possibly stale) repo deploy-key Secret
       ansible.builtin.command:
-        cmd: k3s kubectl apply -f /tmp/argocd-repo-secret.yaml
-      register: repo_secret
-      changed_when: "'created' in repo_secret.stdout or 'configured' in repo_secret.stdout"
+        cmd: k3s kubectl -n argocd delete secret repo-gaire-platform --ignore-not-found
+      changed_when: true
 
-    - name: Remove the rendered Secret file from the master
+    - name: Create the ArgoCD repo deploy-key Secret from the key file
+      ansible.builtin.command:
+        cmd: >
+          k3s kubectl -n argocd create secret generic repo-gaire-platform
+          --from-literal=type=git
+          --from-literal=url={{ repo_url }}
+          --from-file=sshPrivateKey=/tmp/argocd-deploy-key
+      no_log: true
+
+    - name: Label the Secret as an ArgoCD repository
+      ansible.builtin.command:
+        cmd: >
+          k3s kubectl -n argocd label secret repo-gaire-platform
+          argocd.argoproj.io/secret-type=repository --overwrite
+
+    - name: Remove the private key file from the master
       ansible.builtin.file:
-        path: /tmp/argocd-repo-secret.yaml
+        path: /tmp/argocd-deploy-key
         state: absent
+
+    - name: Copy the ArgoCD Ingress manifest to the master
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../kubernetes/infrastructure/argocd/ingress.yaml"
+        dest: /tmp/argocd-ingress.yaml
+        mode: "0644"
+
+    - name: Apply the ArgoCD Ingress
+      ansible.builtin.command:
+        cmd: k3s kubectl apply -f /tmp/argocd-ingress.yaml
+      register: argocd_ingress
+      changed_when: "'created' in argocd_ingress.stdout or 'configured' in argocd_ingress.stdout"
 
     - name: Copy root app-of-apps manifest to the master
       ansible.builtin.copy:
@@ -86,16 +107,4 @@
       register: root_apply
       changed_when: "'created' in root_apply.stdout or 'configured' in root_apply.stdout"
       # root references the private repo via the repo-gaire-platform secret
-      # created above (from the vault) — no manual step needed anymore.
-
-    - name: Copy the ArgoCD Ingress manifest to the master
-      ansible.builtin.copy:
-        src: "{{ playbook_dir }}/../../kubernetes/infrastructure/argocd/ingress.yaml"
-        dest: /tmp/argocd-ingress.yaml
-        mode: "0644"
-
-    - name: Apply the ArgoCD Ingress
-      ansible.builtin.command:
-        cmd: k3s kubectl apply -f /tmp/argocd-ingress.yaml
-      register: argocd_ingress
-      changed_when: "'created' in argocd_ingress.stdout or 'configured' in argocd_ingress.stdout"
+      # created above (from the vault) — fully automated, no manual step.
