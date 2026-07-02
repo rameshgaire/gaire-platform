@@ -5,7 +5,7 @@ grafana:
 loki:
   persistence:
     enabled: true
-    storageClassName: longhorn
+    storageClassName: longhorn-single-replica
     size: 10Gi
   resources:
     requests: { memory: 256Mi, cpu: 100m }

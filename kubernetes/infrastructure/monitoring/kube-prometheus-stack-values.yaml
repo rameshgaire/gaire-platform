@@ -8,7 +8,7 @@ prometheus:
     storageSpec:
       volumeClaimTemplate:
         spec:
-          storageClassName: longhorn
+          storageClassName: longhorn-single-replica
           accessModes: ["ReadWriteOnce"]
           resources:
             requests:
@@ -26,7 +26,7 @@ grafana:
     limits:   { memory: 256Mi, cpu: 200m }
   persistence:
     enabled: true
-    storageClassName: longhorn
+    storageClassName: longhorn-single-replica
     size: 2Gi
   # Loki gets added as a datasource once loki-stack is installed (see below)
   additionalDataSources:
