@@ -87,3 +87,15 @@
       changed_when: "'created' in root_apply.stdout or 'configured' in root_apply.stdout"
       # root references the private repo via the repo-gaire-platform secret
       # created above (from the vault) — no manual step needed anymore.
+
+    - name: Copy the ArgoCD Ingress manifest to the master
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../kubernetes/infrastructure/argocd/ingress.yaml"
+        dest: /tmp/argocd-ingress.yaml
+        mode: "0644"
+
+    - name: Apply the ArgoCD Ingress
+      ansible.builtin.command:
+        cmd: k3s kubectl apply -f /tmp/argocd-ingress.yaml
+      register: argocd_ingress
+      changed_when: "'created' in argocd_ingress.stdout or 'configured' in argocd_ingress.stdout"
