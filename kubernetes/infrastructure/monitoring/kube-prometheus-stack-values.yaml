@@ -1,7 +1,7 @@
 # Trimmed for a 2-worker / 8GB-per-node lab cluster already running an LLM stack.
 prometheus:
   prometheusSpec:
-    retention: 3d                    # short retention — this is a lab, not production
+    retention: 3d
     resources:
       requests: { memory: 512Mi, cpu: 200m }
       limits:   { memory: 1Gi,   cpu: 500m }
@@ -12,7 +12,7 @@ prometheus:
           accessModes: ["ReadWriteOnce"]
           resources:
             requests:
-              storage: 10Gi
+              storage: 5Gi
 
 alertmanager:
   alertmanagerSpec:
@@ -28,7 +28,6 @@ grafana:
     enabled: true
     storageClassName: longhorn-single-replica
     size: 2Gi
-  # Loki gets added as a datasource once loki-stack is installed (see below)
   additionalDataSources:
     - name: Loki
       type: loki

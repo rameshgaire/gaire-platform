@@ -1,4 +1,6 @@
 # Loki + Promtail only — Grafana comes from kube-prometheus-stack instead.
+# NOTE: planned migration to Cloudflare R2 for Loki's object storage backend
+# (10GB free tier) — see README "Monitoring" for the tracked follow-up.
 grafana:
   enabled: false
 
@@ -6,13 +8,13 @@ loki:
   persistence:
     enabled: true
     storageClassName: longhorn-single-replica
-    size: 10Gi
+    size: 5Gi
   resources:
     requests: { memory: 256Mi, cpu: 100m }
     limits:   { memory: 512Mi, cpu: 300m }
   config:
     limits_config:
-      retention_period: 72h          # 3 days, matches Prometheus retention
+      retention_period: 72h
 
 promtail:
   resources:
