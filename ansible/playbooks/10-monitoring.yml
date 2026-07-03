@@ -44,6 +44,7 @@
           - /tmp/kps-values.yaml
         wait: true
         wait_timeout: 10m
+        atomic: true
         kubeconfig: "{{ kubeconfig }}"
 
     - name: Copy loki-stack values to the master
@@ -63,6 +64,7 @@
           - /tmp/loki-values.yaml
         wait: true
         wait_timeout: 10m
+        atomic: true
         kubeconfig: "{{ kubeconfig }}"
 
     - name: Copy the Grafana Ingress manifest to the master

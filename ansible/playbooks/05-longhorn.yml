@@ -43,6 +43,7 @@
           - "{{ values_remote_path }}"
         wait: true
         wait_timeout: 10m
+        atomic: true
         kubeconfig: "{{ kubeconfig }}"
 
     - name: Demote K3s's local-path so Longhorn is the sole default StorageClass

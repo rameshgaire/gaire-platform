@@ -29,4 +29,5 @@
         create_namespace: true
         wait: true
         wait_timeout: 5m
+        atomic: true
         kubeconfig: "{{ kubeconfig }}"

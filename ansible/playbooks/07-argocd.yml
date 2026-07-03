@@ -49,6 +49,7 @@
           - "{{ values_remote_path }}"
         wait: true
         wait_timeout: 10m
+        atomic: true
         kubeconfig: "{{ kubeconfig }}"
 
     - name: Write the ArgoCD deploy private key to a file on the master
