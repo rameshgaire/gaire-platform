@@ -28,11 +28,6 @@ grafana:
     enabled: true
     storageClassName: longhorn-single-replica
     size: 2Gi
-  additionalDataSources:
-    - name: Loki
-      type: loki
-      url: http://loki.monitoring.svc.cluster.local:3100
-      access: proxy
 
 kube-state-metrics:
   resources:
