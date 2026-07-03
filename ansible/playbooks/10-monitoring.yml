@@ -76,3 +76,15 @@
         cmd: k3s kubectl apply -f /tmp/grafana-ingress.yaml
       register: grafana_ingress
       changed_when: "'created' in grafana_ingress.stdout or 'configured' in grafana_ingress.stdout"
+
+    - name: Copy the single-replica StorageClass to the master
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../kubernetes/infrastructure/longhorn/single-replica-storageclass.yaml"
+        dest: /tmp/longhorn-single-replica-sc.yaml
+        mode: "0644"
+
+    - name: Apply the single-replica StorageClass
+      ansible.builtin.command:
+        cmd: k3s kubectl apply -f /tmp/longhorn-single-replica-sc.yaml
+      register: sc_apply
+      changed_when: "'created' in sc_apply.stdout or 'configured' in sc_apply.stdout"
