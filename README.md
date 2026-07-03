@@ -29,10 +29,10 @@ single wildcard certificate replicated across namespaces (Reflector).
 | Memos       | `memos.gairelab.uk`        | notes       | 5 Gi Longhorn  | 1        |
 | homepage    | `homepage.gairelab.uk`     | dashboard   | — (ConfigMap)  | 1        |
 | n8n         | `n8n.gairelab.uk`          | automation  | 5 Gi Longhorn  | 1        |
-| Ollama      | internal only (11434)      | model server| 15 Gi Longhorn | 1        |
+| Ollama      | internal only (11434)      | model server| 8 Gi (longhorn-single-replica) | 1 |
 | Open WebUI  | `openwebui.gairelab.uk`    | LLM chat UI | 5 Gi Longhorn  | 1        |
-| AnythingLLM | `anythingllm.gairelab.uk`  | RAG / docs  | 10 Gi Longhorn | **0**    |
-| Grafana     | `grafana.gairelab.uk`      | dashboards  | 2 Gi (single-replica) | 1 |
+| AnythingLLM | `anythingllm.gairelab.uk`  | RAG / docs  | 5 Gi (longhorn-single-replica) | **0** |
+| Grafana     | `grafana.gairelab.uk`      | dashboards  | 2 Gi (longhorn-single-replica) | 1 |
 
 AnythingLLM is deployed but scaled to zero by design (see "The LLM stack") —
 flip `replicas: 0 → 1` in Git when you want to use it, and consider scaling
@@ -40,9 +40,10 @@ Open WebUI down at the same time so they're not both competing with Ollama
 for RAM.
 
 Monitoring (Prometheus + Grafana + Loki) is infrastructure, not an app — see
-"Monitoring" below for why, and note it was installed onto an already-running
-cluster; it has not yet been proven via a full `01→10` rebuild from scratch.
-Treat that as the real test the next time you rebuild.
+"Monitoring" below for why. It has survived a real crash/recovery cycle (see
+the incident writeup in that section) but still hasn't been proven via a full
+`01→10` rebuild from a clean destroy — treat that as the real test the next
+time you rebuild.
 
 ---
 
@@ -657,7 +658,10 @@ and AnythingLLM simultaneously unless headroom is confirmed via
   tag for `ollama/ollama` has lagged behind real releases before (confirmed via
   a GitHub issue against the project), so pin explicitly and bump deliberately.
 - `OLLAMA_HOST=0.0.0.0:11434` to listen cluster-wide; `OLLAMA_MAX_LOADED_MODELS=1`.
-- No Ingress — internal only, `strategy: Recreate`, 15 Gi PVC at `/root/.ollama`.
+- No Ingress — internal only, `strategy: Recreate`, 8 Gi PVC at `/root/.ollama`
+  (`longhorn-single-replica` — trimmed down from an initial 15 Gi once actual
+  model sizes were known: `llama3.2:3b` + `nomic-embed-text` together are
+  ~2.3 GB, so 8 Gi leaves comfortable room for a couple more small models).
 - Models are pulled **after** deploy (data operation, not GitOps):
   ```bash
   kubectl -n ollama exec deploy/ollama -- ollama pull llama3.2:3b
@@ -713,13 +717,25 @@ and AnythingLLM simultaneously unless headroom is confirmed via
 
 ## Storage classes
 
-Two Longhorn StorageClasses exist:
+Three tiers, chosen by "does this data need to survive a single node dying?"
+rather than one-size-fits-all:
 
-- **`longhorn`** (default, 2 replicas) — everything that stores real data:
-  Memos, n8n, Ollama's models, Open WebUI, AnythingLLM.
-- **`longhorn-single-replica`** (1 replica) — for volumes where losing a
-  single node's copy is an acceptable risk in exchange for using half the
-  disk. Currently used by the monitoring stack (Prometheus, Loki, Grafana).
+- **`longhorn`** (default, 2 replicas) — genuinely important, hard-to-replace
+  data: **Memos, n8n** only.
+- **`longhorn-single-replica`** (1 replica) — rebuildable or lower-stakes
+  state, where losing a single node's copy is an acceptable trade for using
+  half the disk: **Ollama (8 Gi), ArgoCD (no PVC — see note below), Prometheus
+  (5 Gi), Loki (5 Gi), Grafana (2 Gi), AnythingLLM (5 Gi, currently unused at
+  `replicas: 0`)**.
+- **No PVC**: whoami, ArgoCD, homepage (ConfigMap only), Open WebUI's frontend
+  state is the one exception still on `longhorn` today — see the app table.
+
+> **Correction from an earlier draft of this README:** ArgoCD does **not**
+> have a PVC. The standard `argo-cd` Helm chart (as installed here, with just
+> `server.insecure: true` set) provisions no PersistentVolumeClaim by default
+> — Redis is in-memory, application state lives in Kubernetes' own etcd. An
+> earlier version of this doc listed a 2 Gi ArgoCD PVC; that was never real,
+> just an assumption that anything "stateful-feeling" must have one. Fixed.
 
 ```yaml
 apiVersion: storage.k8s.io/v1
@@ -735,14 +751,18 @@ parameters:
   staleReplicaTimeout: "2880"
 ```
 
-**Why this exists — a real capacity lesson:** adding the monitoring stack
-requested ~22 Gi of new 2-replica volumes on top of an already-committed ~40 Gi
-across the existing apps, against only 50 Gi of raw disk *per worker* (100 Gi
-total). Several Prometheus/Loki volumes came up `faulted`/`unknown` in
-Longhorn — not because of a bad values.yaml, but because **disk space is a
-separate constraint from CPU/RAM, and `kubectl top nodes` tells you nothing
-about it.** The fix was to move the monitoring stack's lower-stakes volumes to
-a single-replica class, roughly halving their real disk footprint.
+**Why this exists — a real capacity lesson.** The first attempt at adding
+monitoring requested ~22 Gi of *2-replica* volumes on top of an
+already-committed ~40 Gi across the existing apps, against only 50 Gi of raw
+disk *per worker* (100 Gi total) — several volumes came up `faulted`/
+`unknown` in Longhorn. **Disk space is a separate constraint from CPU/RAM, and
+`kubectl top nodes` tells you nothing about it.** The real fix wasn't just
+"add a single-replica class for monitoring" (the first attempt) — it was
+**re-tiering the whole cluster** by actual durability need: only Memos/n8n
+truly warrant 2 replicas; Ollama's models, Grafana's dashboards, and all
+monitoring data are either re-downloadable or explicitly short-retention
+(3 days) and don't need it. That redesign took total Longhorn demand from
+~102 Gi nominal down to ~40 Gi.
 
 **Before adding anything storage-heavy, check disk — not just `kubectl top`:**
 
@@ -753,10 +773,18 @@ kubectl -n longhorn-system get nodes.longhorn.io -o custom-columns=NAME:.metadat
 ssh -F ~/.ssh/config k3s-worker01 df -h /var/lib/longhorn
 ```
 
-**PVC `storageClassName` is immutable once bound.** Trying to change an
-existing PVC's StorageClass via a Helm upgrade fails with `spec is immutable
-after creation` — the fix is to delete the PVC (and whatever pod is using it)
-so it gets recreated fresh against the new class, not patch it in place.
+**PVC `storageClassName` is immutable once bound — and so is a StatefulSet's
+`volumeClaimTemplate`.** Both fail the same way: `helm upgrade` trying to
+patch either one errors with `spec is immutable after creation` /
+`Forbidden: updates ... are forbidden`. There is no in-place fix for either.
+The correct move is always **delete-and-recreate**, not patch:
+- A plain PVC (e.g. Grafana's): delete the PVC (and the pod using it) so
+  Helm recreates it fresh against the new class.
+- A StatefulSet-owned volume (e.g. Loki's, via `loki-stack`'s chart): the PVC
+  fix alone isn't enough — `helm uninstall <release>` then reinstall, since
+  the StatefulSet spec itself (not just the PVC) is the immutable object.
+  For genuinely disposable data (Loki's 3-day-retention logs, in this case)
+  that's a safe, fast fix, not a risky one.
 
 ---
 
@@ -772,27 +800,150 @@ every namespace cluster-wide and isn't scoped to a single app's lifecycle.
   requests/limits trimmed to fit alongside the LLM stack.
 - **`loki-stack`** (grafana, pinned `2.10.3`) — Loki + Promtail for logs.
   Its bundled Grafana is disabled (`grafana.enabled: false`) since
-  kube-prometheus-stack already provides one; Loki is wired in as an
-  additional Grafana datasource instead. Note: `loki-stack` is the simpler,
+  kube-prometheus-stack already provides one; Loki is wired in via its own
+  chart's Grafana-sidecar self-registration (see incident below for why we
+  don't *also* declare it manually). Note: `loki-stack` is the simpler,
   if now-legacy, chart — Grafana's newer split `loki` + `alloy`/`promtail`
   charts are more capable but more complex; not worth it for a lab.
-- Both use **`longhorn-single-replica`** for their PVCs (see "Storage classes"
-  above) — Prometheus 10 Gi, Loki 10 Gi, Grafana 2 Gi.
+- All three use **`longhorn-single-replica`** — Prometheus 5 Gi, Loki 5 Gi,
+  Grafana 2 Gi (trimmed down from an initial 10/10/2 Gi once 3-day retention
+  numbers were actually worked out — see "Storage classes" above).
 - **Grafana** is reachable at `grafana.gairelab.uk` via an Ingress
   (`kubernetes/infrastructure/monitoring/ingress.yaml`, applied by the same
   playbook) referencing the Reflector-provided wildcard secret — no separate
   Certificate, same as every app.
 - **Default login is `admin` / `prom-operator`** (kube-prometheus-stack's
   built-in default) — change it on first login, Settings → Profile.
-- Confirm Loki is wired up: Grafana → Connections → Data sources → should
-  list both **Prometheus** and **Loki**.
+- Confirmed working: Grafana → Connections → Data sources lists both
+  **Prometheus** (default) and **Loki**; built-in dashboards show live data.
 
-> **Not yet proven via a full rebuild.** This was installed onto an
-> already-running cluster (`10-monitoring.yml` run standalone, not as part of
-> a `01→10` sequence from a fresh destroy). The next full rebuild is the real
-> test of whether it comes back cleanly in sequence — watch it closely the
-> first time through, the same way every other playbook needed at least one
-> fix the first time it ran end-to-end.
+### How Prometheus/Loki "authenticate" to Grafana — they don't
+
+There's no login or token exchange between Grafana and its datasources. Both
+expose a plain, unauthenticated HTTP API reachable only at their in-cluster
+Service DNS name (e.g. `http://loki-stack:3100`) — nothing outside the
+cluster's pod network can resolve or route to that address. The actual
+security boundary is **network isolation, not authentication**: Grafana can
+reach them because it's a pod on the same network; the internet can't, because
+there's no Ingress for either. This is standard for this class of internal
+observability stack — only Grafana is meant to be externally exposed. Real
+defense-in-depth here would be a NetworkPolicy restricting which
+namespaces/pods can reach ports `9090`/`3100`; not implemented (lab-scale,
+low-value), flagged in the Roadmap.
+
+### Grafana admin password — reset if forgotten (same idea as ArgoCD's)
+
+The password lives in a Secret that, unlike ArgoCD's initial-admin-secret,
+Grafana does **not** delete after first login — so it can simply be read back:
+
+```bash
+kubectl -n monitoring get secret kube-prometheus-stack-grafana -o jsonpath='{.data.admin-password}' | base64 -d; echo
+```
+
+If you changed the password from inside Grafana's UI, that Secret is now
+stale (won't match what you actually use) — reset it explicitly instead of
+guessing or deleting anything stateful:
+
+```bash
+kubectl -n monitoring patch secret kube-prometheus-stack-grafana \
+  -p '{"stringData": {"admin-password": "your-new-password"}}'
+kubectl -n monitoring rollout restart deployment kube-prometheus-stack-grafana
+```
+
+**Do not delete Grafana's PVC to "fix" a lost password** — this happened once
+during the build: the PVC holds Grafana's dashboard/settings database, not
+credentials, so deleting it doesn't help recover a password and instead
+destroys unrelated state for no reason, forcing a `helm upgrade` just to
+recreate the PVC and get back to where you started. The Secret patch above is
+the actual supported path.
+
+### Incident: Grafana crash-loop after the storage re-tier — two unrelated causes, not a chain
+
+When PVC sizes/classes were changed for Prometheus/Loki/Grafana (the re-tier
+above), Grafana went into `CrashLoopBackOff` and stayed there through several
+Helm upgrade attempts. It looked like a single cascading failure; it was
+actually **two independent, pre-existing bugs that happened to surface at the
+same time** — worth keeping separate, because fixing one did not fix the
+other, and a future reader chasing this as "one root cause" will waste time:
+
+1. **Loki's StatefulSet is immutable, same rule as any PVC.** `loki-stack`
+   runs Loki as a `StatefulSet`, whose `volumeClaimTemplate` (embedding
+   `storageClassName`) cannot be patched by `helm upgrade` any more than a
+   plain PVC can — `Forbidden: updates to statefulset spec ... are forbidden`.
+   Changing Loki's storage class after it already existed hit this wall on
+   every subsequent upgrade attempt. **Fix:** `helm -n monitoring uninstall
+   loki-stack` then let the playbook reinstall it fresh — safe here because
+   Loki's data is explicitly disposable (3-day retention). Never attempt to
+   patch a StatefulSet's volume spec in place.
+2. **Grafana `isDefault` conflict — pre-existing, unrelated to the storage
+   change.** Both `kube-prometheus-stack` (Prometheus's datasource) and
+   `loki-stack` (Loki's own self-registered datasource) default
+   `isDefault: true` in their respective chart templates
+   (`loki-stack`'s `templates/datasources.yaml:27`,
+   confirmed by pulling and grepping the chart source directly — don't trust
+   a `helm show values` dump alone, its output can mix unrelated blocks
+   together ambiguously). Grafana permits only **one** default datasource per
+   org and refuses to start otherwise. This bug existed from the very first
+   monitoring install; it only became visible now because issue #1 kept
+   blocking every attempt to push the `isDefault: false` fix to the cluster.
+   **Fix:** explicit `loki.isDefault: false` in `loki-stack-values.yaml`.
+3. **A third, purely derivative symptom:** because #2 kept Grafana unhealthy,
+   every `kube-prometheus-stack` upgrade's `--wait: 10m` timed out, which left
+   that Helm release locked in `pending-upgrade` — blocking all *further*
+   upgrades to it, including ones unrelated to Grafana. Cleared once #1 and #2
+   were both actually fixed and a normal upgrade could complete. This is why
+   `--atomic` (auto-rollback on a failed/timed-out upgrade, instead of leaving
+   a lock) is a planned addition — see Roadmap; not yet implemented.
+
+**A second, subtler bug found while fixing #2:** a values.yaml edit that adds
+a key to a file already containing a **top-level key of the same name**
+(`loki:` appearing twice — once for `persistence`/`resources`/`config`, once
+more for the `isDefault: false` fix) doesn't merge — YAML keeps only the
+*last* occurrence, silently discarding everything under the first. The file
+looked complete, `ansible-playbook` reported `ok` with no errors, and the
+cluster kept running on its already-correct live state — but `helm get values
+loki-stack` proved the effective config had actually lost `persistence`,
+`resources`, and `config` entirely. **A rebuild from that file would have
+silently reverted Loki to un-sized chart defaults.** Lesson: after any
+programmatic edit to an existing values file (sed, a script, an LLM-generated
+patch), grep for duplicate top-level keys before trusting it —
+`grep -c "^loki:" file.yaml` should say `1`, not `2` — and independently
+verify with `helm get values <release>` that the *live* config matches the
+*file*, not just that the playbook exited cleanly.
+
+> **Rebuild status:** this stack has now survived a full crash/recovery cycle
+> on live infrastructure, but still hasn't been proven via a clean `01→10`
+> destroy-and-rebuild from nothing. That remains the real test — watch
+> playbook 10 closely the next time you rebuild.
+
+### Follow-up: `atomic: true` proved itself the very next time Loki was touched
+
+Shortly after adding `atomic: true` to every Helm task (see Roadmap/gotchas),
+a routine `10-monitoring.yml` re-run hit the *exact* Loki StatefulSet
+immutability error described above (unrelated residual state from the crash
+above, not a new bug). Before `atomic`, this would have left `loki-stack`
+locked in `pending-upgrade`, requiring a manual `helm rollback`/`uninstall` to
+clear — which is what actually happened earlier the same day. This time:
+
+```
+Error: UPGRADE FAILED: release loki-stack failed, and has been rolled back
+due to atomic being set: cannot patch "loki-stack" with kind StatefulSet ...
+```
+
+Helm rolled itself back automatically — `helm -n monitoring status loki-stack`
+showed `STATUS: deployed` immediately after, no lock, no manual intervention.
+The underlying StatefulSet immutability still needed a real fix (`helm -n
+monitoring uninstall loki-stack` then letting the playbook reinstall it —
+same medicine as the original incident, since Loki's data is disposable by
+design), but the *failure mode itself* was no longer disruptive. **This is
+the payoff `atomic: true` was added for, observed on its first real trigger.**
+
+After the reinstall, `10-monitoring.yml` was run **twice in a row with zero
+changes** to confirm it was genuinely resolved rather than papered over —
+second run: `ok=10, changed=0, failed=0`, including the `loki-stack` task
+itself reporting `ok` (not `changed`), and `loki-stack-0` +
+all `loki-stack-promtail-*` pods `1/1 Running`, `0` restarts. Confirmed
+idempotent, not just working-for-now.
 
 ---
 
@@ -969,10 +1120,33 @@ zero, flagged for hardening before real use.
   `kubectl -n longhorn-system get volumes` (watch for `faulted`/`unknown`
   ROBUSTNESS) and real disk usage on the workers *before* adding anything
   storage-heavy, not just node CPU/memory.
-- **A PVC's `storageClassName` is immutable once bound.** Trying to move an
-  existing PVC to a different StorageClass via `helm upgrade` fails with
-  `spec is immutable after creation` — delete the PVC (and the pod using it)
-  so it's recreated fresh, don't try to patch it in place.
+- **A PVC's `storageClassName` is immutable once bound — and so is a
+  StatefulSet's `volumeClaimTemplate`.** Same underlying Kubernetes rule, two
+  different symptoms (`spec is immutable after creation` vs. `Forbidden:
+  updates to statefulset spec ... are forbidden`). Fix is always
+  delete-and-recreate — delete the PVC for a plain Deployment, or
+  `helm uninstall`/reinstall for a StatefulSet-owned volume — never attempt
+  to patch either in place.
+- **Duplicate top-level keys in a values.yaml silently discard, not merge.**
+  A second `loki:` block appended to a file that already had one didn't error
+  — YAML parsers keep only the *last* occurrence, so the first block's keys
+  (`persistence`, `resources`, `config`) vanished with no warning from either
+  the YAML parser or `ansible-playbook`, which reported `ok` throughout. The
+  cluster kept running on its already-correct *live* Helm release, masking
+  the drift — only `helm get values <release>` revealed the file no longer
+  matched reality. After any programmatic/scripted edit to an existing values
+  file, `grep -c "^<key>:" file.yaml` should equal 1, and cross-check with
+  `helm get values` before trusting the file describes what's actually running.
+- **A `--wait`'d Helm upgrade that times out leaves the release locked in
+  `pending-upgrade`,** blocking every subsequent upgrade to that release
+  (including unrelated ones) until cleared via `helm rollback <rel> <rev>` to
+  a known-good revision, or `helm uninstall`/reinstall if none exists.
+  `helm -n <ns> history <release>` shows whether a release is actually
+  `deployed` or stuck. **Fixed:** `atomic: true` is now set on every
+  `kubernetes.core.helm` task (05, 06, 07, 08, 10) — a failed/timed-out
+  upgrade auto-rolls-back instead of leaving a lock. Exception: not added to
+  Traefik's task — that pod's single-hostPort readiness already produces
+  false `--wait` timeouts (see above), and `--atomic` implies `--wait`.
 - **Nested YAML block scalars are fragile — avoid them.** Templating a
   multi-line SSH private key into a YAML `content: |` block (itself inside an
   Ansible task) via a Jinja `indent()` filter produced `ssh: no key found` —
@@ -1064,10 +1238,19 @@ zero, flagged for hardening before real use.
 - [x] Ollama + Open WebUI — running; models pulled (`llama3.2:3b`, `nomic-embed-text`)
 - [x] AnythingLLM — deployed, scaled to zero, ready to flip on
 - [x] AnythingLLM hardening: `JWT_SECRET` via Kubernetes Secret, image pinned to `1.15.0`
-- [x] Monitoring (Prometheus + Grafana + Loki) installed — **not yet proven via a full rebuild**
-- [x] `longhorn-single-replica` StorageClass for lower-stakes volumes (disk-capacity lesson)
+- [x] Monitoring (Prometheus + Grafana + Loki) installed, survived a real
+      crash/recovery incident (Loki StatefulSet immutability + Grafana
+      `isDefault` conflict — see "Monitoring") — **still not proven via a
+      full rebuild from a clean destroy**
+- [x] `longhorn-single-replica` StorageClass; full 3-tier storage redesign
+      completed (Memos/n8n on 2-replica, everything else single-replica or
+      no PVC — see "Storage classes")
+- [x] Add `atomic: true` to every `kubernetes.core.helm` task except Traefik's
+      (auto-rollback on a failed/timed-out upgrade instead of leaving a
+      `pending-upgrade` lock — verified across 05, 06, 07, 08, 10)
 - [ ] Flip `wildcard-source.yaml` to `letsencrypt-production` once the 1-week duplicate-cert cooldown clears
 - [ ] Verify the full `01→10` sequence on the next destroy/rebuild, especially playbook 10
+- [ ] Add a NetworkPolicy restricting which namespaces can reach Prometheus/Loki's ports (defense-in-depth; currently relies on "no Ingress" alone)
 - [ ] Monitor real disk usage as more storage-heavy apps get added — 100 Gi raw (2×50 Gi) is not unlimited
-- [ ] Off-cluster backups (Longhorn → object storage) for app data across rebuilds
+- [ ] Off-cluster backups (Longhorn → object storage) for app data across rebuilds — the real gap in the "important data" tier (Memos/n8n): 2-replica protects against node failure, not accidental deletion or corruption
 - [ ] Optional: seal secrets (SealedSecrets/SOPS) as a further hardening layer
