@@ -5,6 +5,11 @@ grafana:
   enabled: false
 
 loki:
+  # Chart default is `loki.isDefault: true` (confirmed via templates/datasources.yaml:27),
+  # which collides with kube-prometheus-stack's Prometheus datasource (also isDefault:
+  # true) — Grafana allows only one default per org and crash-loops on provisioning
+  # otherwise. Prometheus stays the default; Loki must be explicit false.
+  isDefault: false
   persistence:
     enabled: true
     storageClassName: longhorn-single-replica
@@ -20,10 +25,3 @@ promtail:
   resources:
     requests: { memory: 64Mi, cpu: 50m }
     limits:   { memory: 128Mi, cpu: 100m }
-
-# Chart default is `loki.isDefault: true` (confirmed via templates/datasources.yaml:27),
-# which collides with kube-prometheus-stack's Prometheus datasource (also isDefault:
-# true) — Grafana allows only one default per org and crash-loops on provisioning
-# otherwise. Prometheus stays the default; Loki must be explicit false.
-loki:
-  isDefault: false
